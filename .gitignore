@@ -1,0 +1,21 @@
+# ---- C++ build ----
+build/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+CMakeCache.txt
+CMakeFiles/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- OS / editor ----
+.DS_Store
+.idea/
+.vscode/

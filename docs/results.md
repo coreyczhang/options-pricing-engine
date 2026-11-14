@@ -208,15 +208,20 @@ the root, falling back to bisection when a Newton step would leave the bracket *
 halve the previous step. The first version had only the first rule, and on the 2,016-contract
 grid below **74 solves hit 100 iterations without converging**: on the flat tails of the
 price curve Newton stayed inside the bracket while crawling. The second rule (the classic
-`rtsafe` safeguard) fixed all 74; max is now 30.
+`rtsafe` safeguard) fixed all 74; max is now 29.
 
-A second fix came from CI. The solver stops once the price residual is down to rounding
-noise, and the first version scaled that noise by the price alone. In the money the price is
-a difference of terms of size ~(price + intrinsic), so for deep-ITM quotes the residual
-never got under the tolerance and the solve bisected on noise down to `vol_tol`. The answer
-was still right, but the iteration count depended on the last bits of the platform's
-`exp`/`erfc`: **44 iterations on Linux/glibc vs 30 on macOS**, which failed the iteration
-test there. Scaling the tolerance by price + 2 × intrinsic fixed it.
+The stopping rule took three tries, and CI on Linux caught the first two. The solver stops
+once the price residual is indistinguishable from rounding noise in `bs::price`. That noise
+is about ε × (|S e^(−qT) N(±d1)| + |K e^(−rT) N(±d2)|), because the price is a difference of
+those two terms, and it can be far larger than ε × price whenever they nearly cancel (deep
+in the money, or near the forward at low vol). Version 1 scaled the noise by the price;
+version 2 by price + 2 × intrinsic. Each underestimated it somewhere, so those solves
+bisected on noise down to `vol_tol`. The answers were still right, but the iteration count
+depended on the last bits of the platform's `exp`/`erfc`: **44 iterations on Linux/glibc
+vs 30 on macOS**, which failed the iteration test there. Version 3 uses the term magnitudes
+directly (they sum to |V − 2·S·delta|, free from the Greeks already computed per step).
+Building locally with `-ffp-contract=off` (no fused multiply-add, closer to GCC on x86)
+reproduced a failure, and the fix passes under both builds and on Linux CI.
 
 Round trip — price at a known σ, solve from the automatic start, compare — on 2,016
 contracts (vol 1%–300%, moneyness 0.5–2, 1 day–5 years, call/put, q = 0/3%), bucketed by how
@@ -224,9 +229,9 @@ much the quote pins down σ (vega / price):
 
 | bucket | contracts | median iters | p95 iters | max iters | worst vol error |
 |---|---:|---:|---:|---:|---:|
-| vega/price >= 1e-2 (well conditioned) | 1498 | 5 | 19 | 30 | 7.6e-13 |
-| 1e-6 <= vega/price < 1e-2 | 117 | 7 | 14 | 16 | 9.6e-10 |
-| vega/price < 1e-6 (time value ~ rounding) | 43 | 11 | 15 | 15 | 4.7e-04 |
+| vega/price >= 1e-2 (well conditioned) | 1498 | 5 | 19 | 29 | 4.2e-13 |
+| 1e-6 <= vega/price < 1e-2 | 117 | 7 | 14 | 16 | 1.4e-08 |
+| vega/price < 1e-6 (time value ~ rounding) | 43 | 11 | 15 | 15 | 4.1e-03 |
 
 358 more quotes sit exactly on the intrinsic bound once rounded (deep-ITM time value below a
 few ulps of the strike, or a far-OTM price that underflows to 0). They are reported as
@@ -234,13 +239,15 @@ few ulps of the strike, or a far-OTM price that underflows to 0). They are repor
 
 **Reading this honestly:**
 
-- **Accuracy is limited by the quote, not the solver.** A price carries rounding error of
-  about ε·max(S, K); dividing by vega gives the vol error that alone induces. The stopping
-  rule accepts a residual of at most ~28× that, so the test
-  (`RecoversVolToTheConditioningLimitOnGrid`) asserts every solve is within 64× the bound;
-  the worst case measured is 10×. So 1e-4 vol error on a 5-year, 50%-strike call at 5% vol
-  is not a solver bug: its vega is 6e-10, so every vol in a band ~1e-4 wide (up to 5e-4 in
-  the worst case on the grid) reprices it to the last digit.
+- **Accuracy is limited by the quote, not the solver.** Every σ whose price lies within
+  rounding noise of the quote is an equally valid answer, and that set can be wide: a
+  one-week put 50% in the money prices identically to rounding for every vol from 0.24 to
+  0.40, which is the 4e-3 worst case above. So the round-trip test
+  (`ReproducesThePriceAndRecoversVolWhereThePriceDeterminesIt`) checks two things: every
+  solve reprices the quote to within noise, and the vol itself is recovered to 1e-9 wherever
+  noise / vega — the width of that set — is below 1e-12. An earlier version of the test
+  bounded the vol error by noise / vega at the *true* vol; that linearization fails exactly
+  where vega collapses between the true vol and the answer, as in the put above.
 - **Tiny OTM prices are not treated as zero.** The tolerance band around intrinsic applies
   only in the money, where intrinsic is a difference of large numbers. Out of the money the
   bound is exactly 0 and `erfc` keeps tiny prices accurate, so a 1-week, 5%-OTM call at 1%
@@ -251,7 +258,7 @@ few ulps of the strike, or a far-OTM price that underflows to 0). They are repor
   for a 10%-OTM, 3-month option. That is where the p95 of 19 iterations in the
   well-conditioned bucket comes from; near the money it is 4. The answer never depends on
   the start (tested with starts from 1e-4 to 9.0).
-- **Cost:** 656 ns per solve, 4.6 iterations on average for 1-year calls with strikes 80–120
+- **Cost:** 699 ns per solve, 4.6 iterations on average for 1-year calls with strikes 80–120
   and true vol 10%–46% (benchmarks.md) — about 5 price + vega evaluations.
 
 ## Next steps

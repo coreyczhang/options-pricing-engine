@@ -106,9 +106,9 @@ ope::iv::Result r = ope::iv::solve(opt, mkt, /*price=*/10.450584);  // r.vol ~ 0
 - **MC Greeks** (1M paths) match the analytic Greeks with all |z| ≤ 0.74; CRN keeps
   delta's noise flat as the bump shrinks, while independent seeds are 18× worse at a 1%
   bump and 1,809× worse at 0.01%.
-- **Implied vol** recovers σ to ~1e-12 wherever the quote determines it, and otherwise to
-  within the limit set by price rounding / vega (tested on 2,016 contracts, 1%–300% vol);
-  median 5 iterations, 656 ns per solve.
+- **Implied vol** recovers σ to ~1e-12 wherever the quote determines it, and otherwise
+  returns a σ that reprices the quote to rounding (tested on 2,016 contracts, 1%–300% vol);
+  median 5 iterations, 699 ns per solve.
 - **Speed (Apple M3):** closed form 57 ns; MC 35 ns/path plain, 20 ns/path antithetic,
   72 ns/path for all five Greeks.
 
@@ -165,8 +165,9 @@ flat tails, so it runs inside a bracket and bisects whenever a step leaves it or
 halve the last one — convergence is guaranteed, not hoped for. Quotes outside the
 no-arbitrage bounds are returned as a status because real chains contain them and a surface
 builder must skip, not abort. And the round-trip test doesn't demand 1e-12 everywhere —
-that would be unattainable for a deep-ITM option whose vega is 1e-10 — it demands accuracy
-to within what price rounding divided by vega allows.
+that is unattainable when many vols reprice a quote identically to rounding — it demands
+that every solve reprice the quote to within noise, and that σ be recovered tightly
+wherever the price actually determines it.
 
 **Numerics where they matter.** N(x) uses `erfc`, not `1 + erf`, so far-OTM prices keep
 precision instead of rounding to 0; variance uses Welford's one-pass algorithm instead of

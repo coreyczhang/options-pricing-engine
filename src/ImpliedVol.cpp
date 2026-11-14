@@ -75,26 +75,35 @@ Result solve(const EuropeanOption& opt, const Market& mkt, double price,
     double x = mkt.vol > 0.0 ? mkt.vol : automatic_guess(fwd_spot, pv_strike, T, price);
     if (!(x > lo && x < hi)) x = 0.5 * (lo + hi);
 
-    // Once the residual is down to rounding noise in bs::price, further steps
-    // only chase that noise; this is what bounds the work when vega is tiny.
-    // In the money the price is a difference of terms of size ~(price +
-    // intrinsic), so that, not the price, sets the noise scale; out of the
-    // money lower == 0 and erfc keeps the price accurate to relative eps.
-    // (Scaling by the price alone left ITM solves bisecting on noise down to
-    // vol_tol, with an iteration count that varied with the platform's libm.)
-    const double price_tol = 8.0 * kEps * (price + 2.0 * lower);
+    // Stop once the residual is indistinguishable from rounding noise in
+    // bs::price: further steps would only chase that noise. The price is a
+    // difference of two terms, S e^{-qT} N(+/-d1) and K e^{-rT} N(+/-d2), so its
+    // absolute rounding error is ~eps * (sum of their magnitudes) — large next
+    // to the price itself whenever the terms nearly cancel (deep ITM, or
+    // near the forward at low vol). That sum is |V - 2 S delta| for calls and
+    // puts alike. The denorm_min term covers subnormal prices (< 2.2e-308),
+    // whose precision is absolute, not relative.
+    //
+    // (Two earlier versions scaled the noise by the price, then by price +
+    // 2 * intrinsic. Both underestimated it in some regime, so those solves
+    // bisected on noise down to vol_tol, taking a libm-dependent number of
+    // iterations: 44 on Linux/glibc vs 30 on macOS.)
     double prev_step = hi - lo;
     for (int iter = 1; iter <= settings.max_iter; ++iter) {
         m.vol = x;
-        const double f = bs::price(opt, m) - price;
-        if (std::abs(f) <= price_tol) return {x, Status::Converged, iter};
+        const double model = bs::price(opt, m);
+        const Greeks g = bs::greeks(opt, m);
+        const double f = model - price;
+        const double noise = 8.0 * kEps * std::abs(model - 2.0 * mkt.spot * g.delta) +
+                             8.0 * std::numeric_limits<double>::denorm_min();
+        if (std::abs(f) <= noise) return {x, Status::Converged, iter};
         (f < 0.0 ? lo : hi) = x;
 
         // Newton unless it would leave the bracket or isn't at least halving
         // the step each iteration (|f / vega| > |prev_step| / 2); then bisect.
         // The second test is what guarantees bisection-speed progress when
         // Newton crawls, e.g. on the flat tails of the price curve.
-        const double vega = bs::greeks(opt, m).vega;
+        const double vega = g.vega;
         double next = x - f / vega;
         if (!(vega > 0.0) || !(next > lo && next < hi) ||
             std::abs(2.0 * f) > std::abs(prev_step * vega))

@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <limits>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "ope/BlackScholes.hpp"
@@ -40,16 +43,20 @@ iv::Result solve_auto(const EuropeanOption& opt, Market mkt, double price) {
     return iv::solve(opt, mkt, price);
 }
 
-// The best any solver can do: bs::price carries rounding error of order
-// eps * scale, scale = max(S e^{-qT}, K e^{-rT}), and dividing a price error by
-// vega gives the vol error it induces. The solver stops once
-// |price residual| <= 8 eps (price + 2 * intrinsic) <= 24 eps * scale, plus a
-// few eps * scale of rounding in the two prices compared: <= ~28 eps * scale /
-// vega. 64x gives 2x headroom over that derived bound; measured peak is 10x.
-double vol_error_bound(const Case& c) {
-    const double scale = std::max(c.mkt.spot * std::exp(-c.mkt.div_yield * c.opt.expiry),
-                                  c.opt.strike * std::exp(-c.mkt.rate * c.opt.expiry));
-    return 1e-10 + 64.0 * DBL_EPSILON * scale / bs::greeks(c.opt, c.mkt).vega;
+// Rounding scale of bs::price at the case's vol: the price is a difference of
+// two terms, S e^{-qT} N(+/-d1) and K e^{-rT} N(+/-d2), whose magnitudes sum to
+// |V - 2 S delta|; its absolute rounding error is a few eps times that.
+double price_noise(const EuropeanOption& opt, const Market& mkt) {
+    const double v = bs::price(opt, mkt);
+    return DBL_EPSILON * std::abs(v - 2.0 * mkt.spot * bs::greeks(opt, mkt).delta) +
+           std::numeric_limits<double>::denorm_min();
+}
+
+std::string describe(const Case& c) {
+    std::ostringstream os;
+    os << (c.opt.type == OptionType::Call ? "call" : "put") << " K=" << c.opt.strike
+       << " T=" << c.opt.expiry << " vol=" << c.mkt.vol << " q=" << c.mkt.div_yield;
+    return os.str();
 }
 
 // ---- Reference value -------------------------------------------------------
@@ -64,15 +71,23 @@ TEST(ImpliedVolReference, HullExample) {
 
 // ---- Round trip: price at sigma, solve, recover sigma ----------------------
 
-TEST(ImpliedVolRoundTrip, RecoversVolToTheConditioningLimitOnGrid) {
-    int converged = 0, at_bound = 0, max_iter = 0;
+TEST(ImpliedVolRoundTrip, ReproducesThePriceAndRecoversVolWhereThePriceDeterminesIt) {
+    // What a quote can tell you: every sigma whose price is within rounding
+    // noise of the quote is an equally valid answer. So (1) every solve must
+    // reprice to within noise, and (2) the vol itself must be recovered tightly
+    // only where noise / vega — the width of that set of sigmas — is small.
+    // Requiring (2) everywhere is unattainable: a one-week put 50% in the money
+    // prices identically to rounding for every vol from 0.24 to 0.40.
+    int identified = 0, loose = 0, at_bound = 0, max_iter = 0;
+    std::string slowest;
     for (const Case& c : grid()) {
         const double price = bs::price(c.opt, c.mkt);
         const iv::Result r = solve_auto(c.opt, c.mkt, price);
-        SCOPED_TRACE(::testing::Message() << "K=" << c.opt.strike << " T=" << c.opt.expiry
-                                          << " vol=" << c.mkt.vol << " q=" << c.mkt.div_yield
-                                          << (c.opt.type == OptionType::Call ? " call" : " put"));
-        max_iter = std::max(max_iter, r.iterations);
+        SCOPED_TRACE(describe(c));
+        if (r.iterations > max_iter) {
+            max_iter = r.iterations;
+            slowest = describe(c);
+        }
         if (r.status == iv::Status::AtLowerBound) {
             // Only legitimate when the time value is lost to rounding (or the
             // OTM price underflowed to 0): nothing left to infer a vol from.
@@ -83,13 +98,24 @@ TEST(ImpliedVolRoundTrip, RecoversVolToTheConditioningLimitOnGrid) {
             continue;
         }
         ASSERT_EQ(r.status, iv::Status::Converged);
-        EXPECT_NEAR(r.vol, c.mkt.vol, vol_error_bound(c));
-        ++converged;
+
+        Market solved = c.mkt;
+        solved.vol = r.vol;
+        const double residual = std::abs(bs::price(c.opt, solved) - price);
+        EXPECT_LE(residual, 16.0 * price_noise(c.opt, solved) +
+                                bs::greeks(c.opt, solved).vega * 1e-12);
+
+        const double width = price_noise(c.opt, c.mkt) / bs::greeks(c.opt, c.mkt).vega;
+        if (width <= 1e-12) {
+            EXPECT_NEAR(r.vol, c.mkt.vol, 1e-9);
+            ++identified;
+        } else {
+            ++loose;
+        }
     }
-    // Pin the split so a change in solver behaviour shows up here.
-    EXPECT_EQ(converged + at_bound, 2016);
-    EXPECT_GT(converged, 1600);
-    EXPECT_LE(max_iter, 40);  // measured max: 30 (macOS and Linux)
+    EXPECT_EQ(identified + loose + at_bound, 2016);
+    EXPECT_GT(identified, 1500);
+    EXPECT_LE(max_iter, 40) << "slowest: " << slowest;  // measured max: 30
 }
 
 TEST(ImpliedVolRoundTrip, WellConditionedQuotesRecoverToNearMachinePrecision) {

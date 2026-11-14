@@ -7,7 +7,7 @@ namespace ope::iv {
 /// Why a solve stopped. Anything other than Converged or AtLowerBound means no
 /// volatility reproduces the quote, and Result::vol is NaN.
 enum class Status {
-    Converged,        ///< |vol step| or the bracket width fell below Settings::vol_tol
+    Converged,        ///< price residual within rounding noise, or vol step / bracket < vol_tol
     AtLowerBound,     ///< price == no-arbitrage lower bound; the implied vol is 0
     BelowLowerBound,  ///< price < max(+/-(S e^{-qT} - K e^{-rT}), 0): arbitrage
     AboveUpperBound,  ///< price >= S e^{-qT} (call) or K e^{-rT} (put): arbitrage
@@ -46,13 +46,14 @@ struct Result {
 /// building a surface). Pass 0 for an automatic start: the vol at which vega
 /// peaks, sigma* = sqrt(2 |ln(S e^{-qT} / K e^{-rT})| / T) (Manaster-Koehler),
 /// or for an at-the-forward option the Brenner-Subrahmanyam approximation
-/// sigma ~ sqrt(2 pi / T) * price / S e^{-qT}. The guess changes only the
-/// iteration count, never the answer.
+/// sigma ~ sqrt(2 pi / T) * price / S e^{-qT}. The guess changes the
+/// iteration count, not the answer (beyond the rounding band described next).
 ///
-/// Accuracy limit: the vol error is roughly (price rounding error) / vega, so
-/// when vega is tiny — deep in or out of the money, or very short-dated — the
-/// quote pins down sigma only loosely. The solver then still returns a sigma
-/// that reproduces the price to rounding, but many nearby sigmas do too.
+/// Accuracy limit: the solve stops once the price residual is within rounding
+/// noise of bs::price, so the vol is pinned down to roughly noise / vega. When
+/// vega is tiny — deep in or out of the money, or very short-dated — a wide
+/// range of sigmas reprices the quote identically to rounding, and the
+/// returned sigma is one of them.
 ///
 /// Throws std::invalid_argument on invalid contract/market inputs (see
 /// ope::validate), a non-finite or negative price, or T == 0 (at expiry the

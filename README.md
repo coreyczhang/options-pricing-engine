@@ -3,7 +3,7 @@
 [![CI](https://github.com/coreyczhang/options-pricing-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/coreyczhang/options-pricing-engine/actions/workflows/ci.yml)
 
 A European option pricing and Greeks engine in C++17: a **Black-Scholes closed form** with
-analytic Greeks, and a **Monte Carlo** pricer — plain, antithetic, and bump-and-reprice
+analytic Greeks and an **implied-volatility solver**, and a **Monte Carlo** pricer — plain, antithetic, and bump-and-reprice
 Greeks with common random numbers — that is validated *against* the closed form. The
 emphasis is on correctness you can check: every Monte Carlo number carries a standard
 error, the standard error itself is tested, and the variance reduction is measured rather
@@ -25,8 +25,8 @@ textbook values.
 
 - **No American or path-dependent options.** European payoffs only; no early exercise, no
   Asians or barriers, so no time-stepping or PDE/lattice methods.
-- **No volatility surface or calibration.** σ is a single input; there is no implied-vol
-  solver, smile, or term structure.
+- **No volatility surface or calibration (yet).** A single quote can be inverted to its
+  implied vol (M6), but there is no smile, term structure, or surface fitting; that is M7.
 - **No market data.** Inputs are numbers on the command line or in code; there is no feed,
   no day-count or calendar handling, and no discrete dividends.
 - **Not optimized for throughput.** Single-threaded and scalar; see
@@ -41,9 +41,11 @@ textbook values.
 | M3 | Antithetic variates; measured variance reduction across moneyness | ✅ done |
 | M4 | Bump-and-reprice MC Greeks with common random numbers vs analytic Greeks | ✅ done |
 | M5 | Benchmarks, results write-up, CI | ✅ done |
+| M6 | Implied-vol solver: safeguarded Newton, arbitrage-bound handling, conditioning-aware tests | ✅ done |
+| M7 | Implied-vol surface from a quote grid; Greeks and surface plots | planned |
 
 **Not done (see [Next steps](docs/results.md#next-steps)):** importance sampling for
-deep-OTM options, pathwise / likelihood-ratio Greeks, control variates, quasi-Monte Carlo,
+deep-OTM options, a sharper implied-vol starting guess, pathwise / likelihood-ratio Greeks, control variates, quasi-Monte Carlo,
 path-dependent payoffs.
 
 ## Build & test
@@ -63,6 +65,9 @@ Requires a C++17 compiler and CMake ≥ 3.14. GoogleTest is fetched automaticall
 # pricer <call|put> <spot> <strike> <expiry_years> <rate> <vol> [div_yield]
 ./build/pricer call 49 50 0.3846 0.05 0.20
 
+# pricer iv <call|put> <spot> <strike> <expiry_years> <rate> <price> [div_yield]
+./build/pricer iv call 21 20 0.25 0.10 1.875      # Hull's example: 23.45%
+
 # Regenerate every table in docs/ (Release build for meaningful timings)
 ./build/ope_bench
 ```
@@ -71,6 +76,7 @@ As a library:
 
 ```cpp
 #include "ope/BlackScholes.hpp"
+#include "ope/ImpliedVol.hpp"
 #include "ope/MonteCarlo.hpp"
 
 const ope::EuropeanOption opt{ope::OptionType::Call, /*strike=*/100.0, /*expiry=*/1.0};
@@ -82,6 +88,9 @@ ope::Greeks g = ope::bs::greeks(opt, mkt);
 auto mc = ope::mc::price(opt, mkt, {1'000'000, /*seed=*/42, /*antithetic=*/true});
 // mc.price ± mc.std_error
 auto mg = ope::mc::greeks(opt, mkt, {1'000'000});         // mg.value, mg.std_error
+
+ope::iv::Result r = ope::iv::solve(opt, mkt, /*price=*/10.450584);  // r.vol ~ 0.20
+// mkt.vol is only the starting guess; r.status flags quotes outside no-arbitrage bounds
 ```
 
 ## Results at a glance
@@ -97,6 +106,9 @@ auto mg = ope::mc::greeks(opt, mkt, {1'000'000});         // mg.value, mg.std_er
 - **MC Greeks** (1M paths) match the analytic Greeks with all |z| ≤ 0.74; CRN keeps
   delta's noise flat as the bump shrinks, while independent seeds are 18× worse at a 1%
   bump and 1,809× worse at 0.01%.
+- **Implied vol** recovers σ to ~1e-12 wherever the quote determines it, and otherwise to
+  within the limit set by price rounding / vega (tested on 2,016 contracts, 1%–300% vol);
+  median 5 iterations, 661 ns per solve.
 - **Speed (Apple M3):** closed form 57 ns; MC 35 ns/path plain, 20 ns/path antithetic,
   72 ns/path for all five Greeks.
 
@@ -147,6 +159,15 @@ gives each Greek its own std error from one pass.
 zero; instead the engine returns the discounted forward intrinsic value, which is the
 formula's limit, and tests that the general formula converges to it smoothly.
 
+**Implied vol: bracketed Newton, statuses not exceptions, accuracy judged by conditioning.**
+Newton with the analytic vega is quadratic near the root but can diverge or crawl on the
+flat tails, so it runs inside a bracket and bisects whenever a step leaves it or fails to
+halve the last one — convergence is guaranteed, not hoped for. Quotes outside the
+no-arbitrage bounds are returned as a status because real chains contain them and a surface
+builder must skip, not abort. And the round-trip test doesn't demand 1e-12 everywhere —
+that would be unattainable for a deep-ITM option whose vega is 1e-10 — it demands accuracy
+to within what price rounding divided by vega allows.
+
 **Numerics where they matter.** N(x) uses `erfc`, not `1 + erf`, so far-OTM prices keep
 precision instead of rounding to 0; variance uses Welford's one-pass algorithm instead of
 Σx² − n·x̄², which cancels catastrophically when the spread is small relative to the level.
@@ -168,10 +189,11 @@ precision instead of rounding to 0; variance uses Welford's one-pass algorithm i
 
 ```
 include/ope/   Option.hpp (types, payoff, validation), BlackScholes.hpp,
-               MonteCarlo.hpp, NormalRng.hpp
-src/           Option.cpp, BlackScholes.cpp, MonteCarlo.cpp,
+               ImpliedVol.hpp, MonteCarlo.hpp, NormalRng.hpp
+src/           Option.cpp, BlackScholes.cpp, ImpliedVol.cpp, MonteCarlo.cpp,
                main.cpp (pricer CLI), bench_main.cpp (ope_bench)
-tests/         test_black_scholes.cpp, test_monte_carlo.cpp, test_mc_greeks.cpp
+tests/         test_black_scholes.cpp, test_implied_vol.cpp, test_monte_carlo.cpp,
+               test_mc_greeks.cpp
 docs/          results.md, benchmarks.md
 ```
 

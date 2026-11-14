@@ -30,8 +30,10 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
-      - name: CLI smoke test (Hull Greek-letters example)
-        run: ./build/pricer call 49 50 0.3846 0.05 0.20
+      - name: CLI smoke test (Hull Greek-letters and implied-vol examples)
+        run: |
+          ./build/pricer call 49 50 0.3846 0.05 0.20
+          ./build/pricer iv call 21 20 0.25 0.10 1.875
 
       - name: Validation tables run end to end
         run: ./build/ope_bench > bench.md && cat bench.md

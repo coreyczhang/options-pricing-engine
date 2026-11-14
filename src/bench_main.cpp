@@ -12,8 +12,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <vector>
 
 #include "ope/BlackScholes.hpp"
+#include "ope/ImpliedVol.hpp"
 #include "ope/MonteCarlo.hpp"
 
 namespace {
@@ -297,6 +299,78 @@ void timing_table() {
     std::printf("\n");
 }
 
+// ---- Implied vol: round-trip accuracy, iterations, cost ---------------------
+
+void implied_vol_table() {
+    std::printf("## Implied volatility\n\n");
+
+    // The same 2,016-contract grid as tests/test_implied_vol.cpp: price at a
+    // known vol, solve from the automatic start, compare.
+    struct Row { const char* label; double lo, hi; int n = 0; std::vector<int> iters;
+                 double worst = 0.0; };
+    // Bucketed by vega / price: how much the quote actually pins down sigma.
+    Row rows[] = {{"vega/price >= 1e-2 (well conditioned)", 1e-2, 1e300, 0, {}, 0.0},
+                  {"1e-6 <= vega/price < 1e-2", 1e-6, 1e-2, 0, {}, 0.0},
+                  {"vega/price < 1e-6 (time value ~ rounding)", 0.0, 1e-6, 0, {}, 0.0}};
+    int at_bound = 0, total = 0;
+    for (OptionType type : {OptionType::Call, OptionType::Put})
+        for (double vol : {0.01, 0.05, 0.1, 0.2, 0.4, 0.8, 1.5, 3.0})
+            for (double m : {0.5, 0.7, 0.85, 0.95, 1.0, 1.05, 1.2, 1.5, 2.0})
+                for (double T : {1.0 / 365, 7.0 / 365, 0.1, 0.5, 1.0, 2.0, 5.0})
+                    for (double q : {0.0, 0.03}) {
+                        const EuropeanOption opt{type, 100.0 * m, T};
+                        Market mkt{100.0, 0.05, vol, q};
+                        const double px = ope::bs::price(opt, mkt);
+                        const double ratio = ope::bs::greeks(opt, mkt).vega / px;
+                        mkt.vol = 0.0;
+                        const ope::iv::Result r = ope::iv::solve(opt, mkt, px);
+                        ++total;
+                        if (r.status == ope::iv::Status::AtLowerBound) { ++at_bound; continue; }
+                        for (Row& row : rows)
+                            if (ratio >= row.lo && ratio < row.hi) {
+                                ++row.n;
+                                row.iters.push_back(r.iterations);
+                                row.worst = std::max(row.worst, std::abs(r.vol - vol));
+                            }
+                    }
+    std::printf("Round trip on %d contracts (vol 1%%-300%%, moneyness 0.5-2, 1 day-5 years, "
+                "call/put, q = 0/3%%). %d quotes sit on the intrinsic bound to rounding (or "
+                "underflow to 0) and are reported as AtLowerBound with vol 0; the rest:\n\n",
+                total, at_bound);
+    std::printf("| bucket | contracts | median iters | p95 iters | max iters | worst vol error |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|\n");
+    for (Row& row : rows) {
+        if (row.n == 0) continue;
+        std::sort(row.iters.begin(), row.iters.end());
+        std::printf("| %s | %d | %d | %d | %d | %.1e |\n", row.label, row.n,
+                    row.iters[row.iters.size() / 2], row.iters[row.iters.size() * 95 / 100],
+                    row.iters.back(), row.worst);
+    }
+
+    // Cost: solves of a 1y call across a spread of strikes and true vols.
+    constexpr int kSolves = 200'000;
+    std::vector<double> quotes(1000);
+    std::vector<EuropeanOption> opts(1000);
+    for (int i = 0; i < 1000; ++i) {
+        opts[i] = {OptionType::Call, 80.0 + 40.0 * (i % 100) / 100.0, 1.0};
+        quotes[i] = ope::bs::price(opts[i], {100.0, 0.05, 0.1 + 0.4 * (i / 100) / 10.0});
+    }
+    double acc = 0.0;
+    long iters = 0;
+    const double t = best_ms([&] {
+        for (int i = 0; i < kSolves; ++i) {
+            const ope::iv::Result r =
+                ope::iv::solve(opts[i % 1000], {100.0, 0.05, 0.0}, quotes[i % 1000]);
+            acc += r.vol;
+            iters += r.iterations;
+        }
+    });
+    g_sink = acc;
+    std::printf("\nCost: %.0f ns per solve, %.1f iterations on average (1y calls, K 80-120, "
+                "true vol 10%%-46%%, automatic start, best of 5).\n\n",
+                t * 1e6 / kSolves, static_cast<double>(iters) / (5.0 * kSolves));
+}
+
 }  // namespace
 
 int main() {
@@ -305,5 +379,6 @@ int main() {
     greeks_table();
     bump_size_table();
     timing_table();
+    implied_vol_table();
     return 0;
 }

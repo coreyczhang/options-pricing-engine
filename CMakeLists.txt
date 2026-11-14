@@ -23,11 +23,12 @@ target_compile_options(ope_warnings INTERFACE -Wall -Wextra -Wpedantic)
 
 # ---- Core library ----------------------------------------------------------
 # Sources are added milestone by milestone. M1: Black-Scholes closed form.
-# M2: plain Monte Carlo.
+# M2: plain Monte Carlo. M6: implied volatility.
 add_library(ope
     src/Option.cpp
     src/BlackScholes.cpp
     src/MonteCarlo.cpp
+    src/ImpliedVol.cpp
 )
 target_include_directories(ope PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(ope PRIVATE ope_warnings)

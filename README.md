@@ -3,7 +3,7 @@
 [![CI](https://github.com/coreyczhang/options-pricing-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/coreyczhang/options-pricing-engine/actions/workflows/ci.yml)
 
 A European option pricing and Greeks engine in C++17: a **Black-Scholes closed form** with
-analytic Greeks and an **implied-volatility solver**, and a **Monte Carlo** pricer — plain, antithetic, and bump-and-reprice
+analytic Greeks, an **implied-volatility solver** and **vol surface**, and a **Monte Carlo** pricer — plain, antithetic, and bump-and-reprice
 Greeks with common random numbers — that is validated *against* the closed form. The
 emphasis is on correctness you can check: every Monte Carlo number carries a standard
 error, the standard error itself is tested, and the variance reduction is measured rather
@@ -25,8 +25,9 @@ textbook values.
 
 - **No American or path-dependent options.** European payoffs only; no early exercise, no
   Asians or barriers, so no time-stepping or PDE/lattice methods.
-- **No volatility surface or calibration (yet).** A single quote can be inverted to its
-  implied vol (M6), but there is no smile, term structure, or surface fitting; that is M7.
+- **No model calibration.** The vol surface interpolates inverted quotes (M7); it does
+  not fit a smile model (SVI, SABR) or repair arbitrage, and it has only been validated on
+  synthetic quotes from a known smile, not a real option chain.
 - **No market data.** Inputs are numbers on the command line or in code; there is no feed,
   no day-count or calendar handling, and no discrete dividends.
 - **Not optimized for throughput.** Single-threaded and scalar; see
@@ -42,9 +43,10 @@ textbook values.
 | M4 | Bump-and-reprice MC Greeks with common random numbers vs analytic Greeks | ✅ done |
 | M5 | Benchmarks, results write-up, CI | ✅ done |
 | M6 | Implied-vol solver: safeguarded Newton, arbitrage-bound handling, conditioning-aware tests | ✅ done |
-| M7 | Implied-vol surface from a quote grid; Greeks and surface plots | planned |
+| M7 | Implied-vol surface from quotes, arbitrage checks, SSVI validation; Greeks and surface plots | ✅ done |
 
-**Not done (see [Next steps](docs/results.md#next-steps)):** importance sampling for
+**Not done (see [Next steps](docs/results.md#next-steps)):** SVI fitting, a real option-chain
+demo, importance sampling for
 deep-OTM options, a sharper implied-vol starting guess, pathwise / likelihood-ratio Greeks, control variates, quasi-Monte Carlo,
 path-dependent payoffs.
 
@@ -68,6 +70,9 @@ Requires a C++17 compiler and CMake ≥ 3.14. GoogleTest is fetched automaticall
 # pricer iv <call|put> <spot> <strike> <expiry_years> <rate> <price> [div_yield]
 ./build/pricer iv call 21 20 0.25 0.10 1.875      # Hull's example: 23.45%
 
+# Regenerate the figures in docs/img (needs numpy + matplotlib: scripts/requirements.txt)
+./build/ope_export build/plots && python3 scripts/plot.py build/plots docs/img
+
 # Regenerate every table in docs/ (Release build for meaningful timings)
 ./build/ope_bench
 ```
@@ -78,6 +83,7 @@ As a library:
 #include "ope/BlackScholes.hpp"
 #include "ope/ImpliedVol.hpp"
 #include "ope/MonteCarlo.hpp"
+#include "ope/VolSurface.hpp"
 
 const ope::EuropeanOption opt{ope::OptionType::Call, /*strike=*/100.0, /*expiry=*/1.0};
 const ope::Market mkt{/*spot=*/100.0, /*rate=*/0.05, /*vol=*/0.20};
@@ -91,6 +97,9 @@ auto mg = ope::mc::greeks(opt, mkt, {1'000'000});         // mg.value, mg.std_er
 
 ope::iv::Result r = ope::iv::solve(opt, mkt, /*price=*/10.450584);  // r.vol ~ 0.20
 // mkt.vol is only the starting guess; r.status flags quotes outside no-arbitrage bounds
+
+ope::surface::VolSurface surf(quotes, /*spot=*/100.0, /*rate=*/0.03, /*div=*/0.01);
+double v = surf.vol(/*strike=*/105.0, /*expiry=*/0.75);  // surf.skipped(), surf.arbitrage_violations()
 ```
 
 ## Results at a glance
@@ -109,8 +118,21 @@ ope::iv::Result r = ope::iv::solve(opt, mkt, /*price=*/10.450584);  // r.vol ~ 0
 - **Implied vol** recovers σ to ~1e-12 wherever the quote determines it, and otherwise
   returns a σ that reprices the quote to rounding (tested on 2,016 contracts, 1%–300% vol);
   median 5 iterations, 699 ns per solve.
+- **Vol surface** reproduces quoted vols to 1e-14 and reports no arbitrage on an
+  arbitrage-free SSVI smile, flags injected calendar and butterfly arbitrage, and its
+  interpolation error shrinks ~4× per halving of strike spacing (37 bp of vol worst at $5
+  strikes; up to 8 vol points when extrapolating before the first expiry).
 - **Speed (Apple M3):** closed form 57 ns; MC 35 ns/path plain, 20 ns/path antithetic,
   72 ns/path for all five Greeks.
+
+<p align="center">
+  <img src="docs/img/greeks_vs_spot.png" width="49%" alt="Black-Scholes Greeks across spot">
+  <img src="docs/img/iv_surface.png" width="49%" alt="Implied-volatility surface">
+</p>
+<p align="center">
+  <img src="docs/img/mc_vs_analytic.png" width="49%" alt="Monte Carlo Greeks errors in standard errors">
+  <img src="docs/img/iv_smiles.png" width="49%" alt="Smiles and interpolation error">
+</p>
 
 ## Why these design choices
 
@@ -169,6 +191,18 @@ that is unattainable when many vols reprice a quote identically to rounding — 
 that every solve reprice the quote to within noise, and that σ be recovered tightly
 wherever the price actually determines it.
 
+**Vol surface: interpolate in total variance, keep OTM quotes, validate on a known smile.**
+Total variance against log-moneyness is the coordinate system where no-arbitrage
+conditions are simplest — calendar arbitrage is just w falling with T — so interpolating
+there keeps a calendar-free set of slices calendar-free. OTM quotes are all time value and
+invert with the best conditioning. And with no market data, the honest test is a round
+trip through a smile whose answer is known (SSVI), measuring the interpolation error
+instead of eyeballing a pretty surface.
+
+**Plots in Python, numbers in C++.** The library stays dependency-free; `ope_export`
+writes CSVs and a short matplotlib script draws them, so every figure traces back to
+engine output.
+
 **Numerics where they matter.** N(x) uses `erfc`, not `1 + erf`, so far-OTM prices keep
 precision instead of rounding to 0; variance uses Welford's one-pass algorithm instead of
 Σx² − n·x̄², which cancels catastrophically when the spread is small relative to the level.
@@ -182,6 +216,10 @@ precision instead of rounding to 0; variance uses Welford's one-pass algorithm i
   coarser bump than delta (bias vs noise in [results §5](docs/results.md#5-bump-size-bias-vs-noise-and-why-common-random-numbers)).
   Default bumps are shared across Greeks; at 1M paths delta's 1%-bump bias is ~0.15 se,
   so for much higher path counts delta should use a smaller bump.
+- **Surface extrapolation is a guess.** Outside the quoted strikes and expiries the
+  surface holds vol constant; on the SSVI test that is off by up to 8 vol points on the
+  deep wing before the first expiry (0.2 points at the money). Between expiries, linear interpolation in T is off by up to 1.1 vol
+  points between 1m and 3m.
 - **Model risk is out of scope.** Everything is validated *within* Black-Scholes; nothing
   here says the model is right for any real market.
 - **Timings are from one machine** and single-threaded.
@@ -190,12 +228,13 @@ precision instead of rounding to 0; variance uses Welford's one-pass algorithm i
 
 ```
 include/ope/   Option.hpp (types, payoff, validation), BlackScholes.hpp,
-               ImpliedVol.hpp, MonteCarlo.hpp, NormalRng.hpp
-src/           Option.cpp, BlackScholes.cpp, ImpliedVol.cpp, MonteCarlo.cpp,
-               main.cpp (pricer CLI), bench_main.cpp (ope_bench)
-tests/         test_black_scholes.cpp, test_implied_vol.cpp, test_monte_carlo.cpp,
-               test_mc_greeks.cpp
-docs/          results.md, benchmarks.md
+               ImpliedVol.hpp, VolSurface.hpp, MonteCarlo.hpp, NormalRng.hpp
+src/           Option.cpp, BlackScholes.cpp, ImpliedVol.cpp, VolSurface.cpp, MonteCarlo.cpp,
+               main.cpp (pricer CLI), bench_main.cpp (ope_bench), export_main.cpp (ope_export)
+tests/         test_black_scholes.cpp, test_implied_vol.cpp, test_vol_surface.cpp,
+               test_monte_carlo.cpp, test_mc_greeks.cpp
+scripts/       plot.py (figures from ope_export's CSVs), requirements.txt
+docs/          results.md, benchmarks.md, img/ (figures)
 ```
 
 ## License

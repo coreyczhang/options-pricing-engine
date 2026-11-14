@@ -1,0 +1,3 @@
+# For scripts/plot.py only; the C++ build needs none of this.
+matplotlib>=3.8
+numpy>=1.26

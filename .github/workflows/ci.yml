@@ -37,3 +37,15 @@ jobs:
 
       - name: Validation tables run end to end
         run: ./build/ope_bench > bench.md && cat bench.md
+
+      # The figures in docs/img come from these two steps; running them here
+      # keeps the export and the plot script from rotting.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Figures regenerate (ope_export + scripts/plot.py)
+        run: |
+          python -m pip install --quiet -r scripts/requirements.txt
+          ./build/ope_export build/plots
+          python scripts/plot.py build/plots build/img

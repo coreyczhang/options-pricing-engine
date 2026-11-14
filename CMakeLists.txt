@@ -24,11 +24,13 @@ target_compile_options(ope_warnings INTERFACE -Wall -Wextra -Wpedantic)
 # ---- Core library ----------------------------------------------------------
 # Sources are added milestone by milestone. M1: Black-Scholes closed form.
 # M2: plain Monte Carlo. M6: implied volatility.
+# M7: implied-vol surface.
 add_library(ope
     src/Option.cpp
     src/BlackScholes.cpp
     src/MonteCarlo.cpp
     src/ImpliedVol.cpp
+    src/VolSurface.cpp
 )
 target_include_directories(ope PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(ope PRIVATE ope_warnings)
@@ -40,6 +42,10 @@ target_link_libraries(pricer PRIVATE ope ope_warnings)
 # ---- Validation tables & benchmarks (build Release for meaningful numbers) --
 add_executable(ope_bench src/bench_main.cpp)
 target_link_libraries(ope_bench PRIVATE ope ope_warnings)
+
+# ---- CSV export for the plots in docs/img (plotting itself is scripts/plot.py) --
+add_executable(ope_export src/export_main.cpp)
+target_link_libraries(ope_export PRIVATE ope ope_warnings)
 
 # ---- Tests -----------------------------------------------------------------
 if(OPE_BUILD_TESTS)

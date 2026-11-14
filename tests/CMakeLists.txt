@@ -16,6 +16,7 @@ add_executable(ope_tests
     test_monte_carlo.cpp
     test_mc_greeks.cpp
     test_implied_vol.cpp
+    test_vol_surface.cpp
 )
 target_link_libraries(ope_tests PRIVATE ope ope_warnings GTest::gtest_main)
 

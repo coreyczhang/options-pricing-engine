@@ -210,6 +210,14 @@ grid below **74 solves hit 100 iterations without converging**: on the flat tail
 price curve Newton stayed inside the bracket while crawling. The second rule (the classic
 `rtsafe` safeguard) fixed all 74; max is now 30.
 
+A second fix came from CI. The solver stops once the price residual is down to rounding
+noise, and the first version scaled that noise by the price alone. In the money the price is
+a difference of terms of size ~(price + intrinsic), so for deep-ITM quotes the residual
+never got under the tolerance and the solve bisected on noise down to `vol_tol`. The answer
+was still right, but the iteration count depended on the last bits of the platform's
+`exp`/`erfc`: **44 iterations on Linux/glibc vs 30 on macOS**, which failed the iteration
+test there. Scaling the tolerance by price + 2 × intrinsic fixed it.
+
 Round trip — price at a known σ, solve from the automatic start, compare — on 2,016
 contracts (vol 1%–300%, moneyness 0.5–2, 1 day–5 years, call/put, q = 0/3%), bucketed by how
 much the quote pins down σ (vega / price):
@@ -218,7 +226,7 @@ much the quote pins down σ (vega / price):
 |---|---:|---:|---:|---:|---:|
 | vega/price >= 1e-2 (well conditioned) | 1498 | 5 | 19 | 30 | 7.6e-13 |
 | 1e-6 <= vega/price < 1e-2 | 117 | 7 | 14 | 16 | 9.6e-10 |
-| vega/price < 1e-6 (time value ~ rounding) | 43 | 12 | 15 | 16 | 9.9e-05 |
+| vega/price < 1e-6 (time value ~ rounding) | 43 | 11 | 15 | 15 | 4.7e-04 |
 
 358 more quotes sit exactly on the intrinsic bound once rounded (deep-ITM time value below a
 few ulps of the strike, or a far-OTM price that underflows to 0). They are reported as
@@ -227,11 +235,12 @@ few ulps of the strike, or a far-OTM price that underflows to 0). They are repor
 **Reading this honestly:**
 
 - **Accuracy is limited by the quote, not the solver.** A price carries rounding error of
-  about ε·max(S, K); dividing by vega gives the vol error that alone induces. The test
-  (`RecoversVolToTheConditioningLimitOnGrid`) asserts every solve is within 32× that bound;
-  the worst case measured is 3.2×. So 1e-4 vol error on a 5-year, 50%-strike call at 5% vol
-  is not a solver bug: its vega is 6e-10, so every vol in a band ~1e-4 wide reprices it to
-  the last digit.
+  about ε·max(S, K); dividing by vega gives the vol error that alone induces. The stopping
+  rule accepts a residual of at most ~28× that, so the test
+  (`RecoversVolToTheConditioningLimitOnGrid`) asserts every solve is within 64× the bound;
+  the worst case measured is 10×. So 1e-4 vol error on a 5-year, 50%-strike call at 5% vol
+  is not a solver bug: its vega is 6e-10, so every vol in a band ~1e-4 wide (up to 5e-4 in
+  the worst case on the grid) reprices it to the last digit.
 - **Tiny OTM prices are not treated as zero.** The tolerance band around intrinsic applies
   only in the money, where intrinsic is a difference of large numbers. Out of the money the
   bound is exactly 0 and `erfc` keeps tiny prices accurate, so a 1-week, 5%-OTM call at 1%
@@ -242,7 +251,7 @@ few ulps of the strike, or a far-OTM price that underflows to 0). They are repor
   for a 10%-OTM, 3-month option. That is where the p95 of 19 iterations in the
   well-conditioned bucket comes from; near the money it is 4. The answer never depends on
   the start (tested with starts from 1e-4 to 9.0).
-- **Cost:** 661 ns per solve, 4.6 iterations on average for 1-year calls with strikes 80–120
+- **Cost:** 656 ns per solve, 4.6 iterations on average for 1-year calls with strikes 80–120
   and true vol 10%–46% (benchmarks.md) — about 5 price + vega evaluations.
 
 ## Next steps

@@ -16,7 +16,7 @@ best of 5 runs (3 at 10M paths) with a fresh seed per run.
 **Black-Scholes closed form:** price **57 ns/option**; price + all five Greeks
 **66 ns/option** (average over 2,000,000 calls with varying spot).
 
-**Implied vol:** **661 ns/solve**, 4.6 Newton/bisection iterations on average (1y calls,
+**Implied vol:** **656 ns/solve**, 4.6 Newton/bisection iterations on average (1y calls,
 K 80–120, true vol 10%–46%, automatic start). Each iteration is one price and one vega, so
 this is ~5× the cost of a price; iteration counts across a wider grid are in
 [results §8](results.md#8-implied-volatility-inverting-black-scholes).

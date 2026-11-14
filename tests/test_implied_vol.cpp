@@ -41,13 +41,15 @@ iv::Result solve_auto(const EuropeanOption& opt, Market mkt, double price) {
 }
 
 // The best any solver can do: bs::price carries rounding error of order
-// eps * max(S e^{-qT}, K e^{-rT}), and dividing a price error by vega gives the
-// vol error it induces. The sweep behind this test peaked at 3.2x this bound;
-// 32x leaves 10x headroom.
+// eps * scale, scale = max(S e^{-qT}, K e^{-rT}), and dividing a price error by
+// vega gives the vol error it induces. The solver stops once
+// |price residual| <= 8 eps (price + 2 * intrinsic) <= 24 eps * scale, plus a
+// few eps * scale of rounding in the two prices compared: <= ~28 eps * scale /
+// vega. 64x gives 2x headroom over that derived bound; measured peak is 10x.
 double vol_error_bound(const Case& c) {
     const double scale = std::max(c.mkt.spot * std::exp(-c.mkt.div_yield * c.opt.expiry),
                                   c.opt.strike * std::exp(-c.mkt.rate * c.opt.expiry));
-    return 1e-10 + 32.0 * DBL_EPSILON * scale / bs::greeks(c.opt, c.mkt).vega;
+    return 1e-10 + 64.0 * DBL_EPSILON * scale / bs::greeks(c.opt, c.mkt).vega;
 }
 
 // ---- Reference value -------------------------------------------------------
@@ -87,7 +89,7 @@ TEST(ImpliedVolRoundTrip, RecoversVolToTheConditioningLimitOnGrid) {
     // Pin the split so a change in solver behaviour shows up here.
     EXPECT_EQ(converged + at_bound, 2016);
     EXPECT_GT(converged, 1600);
-    EXPECT_LE(max_iter, 40);  // measured max: 30
+    EXPECT_LE(max_iter, 40);  // measured max: 30 (macOS and Linux)
 }
 
 TEST(ImpliedVolRoundTrip, WellConditionedQuotesRecoverToNearMachinePrecision) {

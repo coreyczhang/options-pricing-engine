@@ -77,7 +77,12 @@ Result solve(const EuropeanOption& opt, const Market& mkt, double price,
 
     // Once the residual is down to rounding noise in bs::price, further steps
     // only chase that noise; this is what bounds the work when vega is tiny.
-    const double price_tol = 8.0 * kEps * price;
+    // In the money the price is a difference of terms of size ~(price +
+    // intrinsic), so that, not the price, sets the noise scale; out of the
+    // money lower == 0 and erfc keeps the price accurate to relative eps.
+    // (Scaling by the price alone left ITM solves bisecting on noise down to
+    // vol_tol, with an iteration count that varied with the platform's libm.)
+    const double price_tol = 8.0 * kEps * (price + 2.0 * lower);
     double prev_step = hi - lo;
     for (int iter = 1; iter <= settings.max_iter; ++iter) {
         m.vol = x;

@@ -108,7 +108,7 @@ ope::iv::Result r = ope::iv::solve(opt, mkt, /*price=*/10.450584);  // r.vol ~ 0
   bump and 1,809× worse at 0.01%.
 - **Implied vol** recovers σ to ~1e-12 wherever the quote determines it, and otherwise to
   within the limit set by price rounding / vega (tested on 2,016 contracts, 1%–300% vol);
-  median 5 iterations, 661 ns per solve.
+  median 5 iterations, 656 ns per solve.
 - **Speed (Apple M3):** closed form 57 ns; MC 35 ns/path plain, 20 ns/path antithetic,
   72 ns/path for all five Greeks.
 

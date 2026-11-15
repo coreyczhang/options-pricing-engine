@@ -17,6 +17,7 @@
 #include "ope/BlackScholes.hpp"
 #include "ope/ImpliedVol.hpp"
 #include "ope/MonteCarlo.hpp"
+#include "ope/Svi.hpp"
 
 namespace {
 
@@ -371,6 +372,29 @@ void implied_vol_table() {
                 t * 1e6 / kSolves, static_cast<double>(iters) / (5.0 * kSolves));
 }
 
+
+// ---- SVI fit cost --------------------------------------------------------------
+
+void svi_timing() {
+    // One 1y SSVI slice (the tests' parameters) at $5 strikes 60-160: 21 points.
+    const double th = 0.04 + 0.02 * (1.0 - std::exp(-2.0));
+    const double phi = 1.0 / (std::sqrt(th) * std::sqrt(1.0 + th));
+    const ope::svi::Params truth{th * 0.64 / 2.0, th * phi / 2.0, -0.6, 0.6 / phi, 0.8 / phi};
+    std::vector<double> k, w;
+    for (double K = 60.0; K <= 160.0 + 1e-9; K += 5.0) {
+        k.push_back(std::log(K / (100.0 * std::exp(0.02))));
+        w.push_back(truth.w(k.back()));
+    }
+    double acc = 0.0;
+    const double t = best_ms([&] { acc += ope::svi::fit(k, w, 1.0).params.a; });
+    g_sink = acc;
+    std::printf("## SVI fit\n\nOne expiry, 21 strikes: %.1f ms per fit (best of 5): a 41 x 25 "
+                "starting grid over (m, sigma) plus Nelder-Mead refinement, where every "
+                "objective evaluation is an exact 3-variable constrained least squares "
+                "(42 small KKT solves). The split between grid and refinement is not "
+                "measured.\n\n", t);
+}
+
 }  // namespace
 
 int main() {
@@ -380,5 +404,6 @@ int main() {
     bump_size_table();
     timing_table();
     implied_vol_table();
+    svi_timing();
     return 0;
 }

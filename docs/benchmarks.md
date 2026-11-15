@@ -21,6 +21,9 @@ K 80–120, true vol 10%–46%, automatic start). Each iteration is one price an
 this is ~5× the cost of a price; iteration counts across a wider grid are in
 [results §8](results.md#8-implied-volatility-inverting-black-scholes).
 
+**SVI fit:** **10.7 ms** per expiry with 21 strikes (grid search plus Nelder–Mead, each
+step an exact constrained least squares; [results §10](results.md#10-fitting-svi-instead-of-interpolating)).
+
 **Monte Carlo, ATM call:**
 
 | paths | plain price | ns/path | antithetic price | ns/path | Greeks (plain) | ns/path | price se (plain) |

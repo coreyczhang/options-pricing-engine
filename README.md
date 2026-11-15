@@ -3,7 +3,7 @@
 [![CI](https://github.com/coreyczhang/options-pricing-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/coreyczhang/options-pricing-engine/actions/workflows/ci.yml)
 
 A European option pricing and Greeks engine in C++17: a **Black-Scholes closed form** with
-analytic Greeks, an **implied-volatility solver** and **vol surface**, and a **Monte Carlo** pricer — plain, antithetic, and bump-and-reprice
+analytic Greeks, an **implied-volatility solver**, a **vol surface** with an **SVI smile fit**, and a **Monte Carlo** pricer — plain, antithetic, and bump-and-reprice
 Greeks with common random numbers — that is validated *against* the closed form. The
 emphasis is on correctness you can check: every Monte Carlo number carries a standard
 error, the standard error itself is tested, and the variance reduction is measured rather
@@ -25,9 +25,10 @@ textbook values.
 
 - **No American or path-dependent options.** European payoffs only; no early exercise, no
   Asians or barriers, so no time-stepping or PDE/lattice methods.
-- **No model calibration.** The vol surface interpolates inverted quotes (M7); it does
-  not fit a smile model (SVI, SABR) or repair arbitrage, and it has only been validated on
-  synthetic quotes from a known smile, not a real option chain.
+- **No real-data calibration.** The surface interpolates inverted quotes or fits raw SVI
+  per expiry (M8). It reports arbitrage rather than repairing it, fits expiries
+  independently (no joint SSVI), and has only been validated on synthetic quotes from a
+  known smile, not a real option chain.
 - **No market data.** Inputs are numbers on the command line or in code; there is no feed,
   no day-count or calendar handling, and no discrete dividends.
 - **Not optimized for throughput.** Single-threaded and scalar; see
@@ -44,9 +45,10 @@ textbook values.
 | M5 | Benchmarks, results write-up, CI | ✅ done |
 | M6 | Implied-vol solver: safeguarded Newton, arbitrage-bound handling, conditioning-aware tests | ✅ done |
 | M7 | Implied-vol surface from quotes, arbitrage checks, SSVI validation; Greeks and surface plots | ✅ done |
+| M8 | Raw-SVI fit per expiry (exact constrained inner LS + 2-D outer search), Durrleman check, SVI smile model on the surface | ✅ done |
 
-**Not done (see [Next steps](docs/results.md#next-steps)):** SVI fitting, a real option-chain
-demo, importance sampling for
+**Not done (see [Next steps](docs/results.md#next-steps)):** joint SSVI fit across expiries,
+a real option-chain demo, importance sampling for
 deep-OTM options, a sharper implied-vol starting guess, pathwise / likelihood-ratio Greeks, control variates, quasi-Monte Carlo,
 path-dependent payoffs.
 
@@ -100,6 +102,7 @@ ope::iv::Result r = ope::iv::solve(opt, mkt, /*price=*/10.450584);  // r.vol ~ 0
 
 ope::surface::VolSurface surf(quotes, /*spot=*/100.0, /*rate=*/0.03, /*div=*/0.01);
 double v = surf.vol(/*strike=*/105.0, /*expiry=*/0.75);  // surf.skipped(), surf.arbitrage_violations()
+ope::surface::VolSurface smooth(quotes, 100.0, 0.03, 0.01, ope::surface::SmileModel::Svi);
 ```
 
 ## Results at a glance
@@ -122,6 +125,10 @@ double v = surf.vol(/*strike=*/105.0, /*expiry=*/0.75);  // surf.skipped(), surf
   arbitrage-free SSVI smile, flags injected calendar and butterfly arbitrage, and its
   interpolation error shrinks ~4× per halving of strike spacing (37 bp of vol worst at $5
   strikes; up to 8 vol points when extrapolating before the first expiry).
+- **SVI fit** recovers an SVI smile's five parameters to < 1e-6; on quotes with noise its
+  residual and error match least-squares theory (0.865 and 0.475 × noise vs 0.873 and
+  0.488), halving linear interpolation's error, and it reports no butterfly arbitrage where
+  the interpolated noisy smile reports 470 spurious ones.
 - **Speed (Apple M3):** closed form 57 ns; MC 35 ns/path plain, 20 ns/path antithetic,
   72 ns/path for all five Greeks.
 
@@ -132,6 +139,9 @@ double v = surf.vol(/*strike=*/105.0, /*expiry=*/0.75);  // surf.skipped(), surf
 <p align="center">
   <img src="docs/img/mc_vs_analytic.png" width="49%" alt="Monte Carlo Greeks errors in standard errors">
   <img src="docs/img/iv_smiles.png" width="49%" alt="Smiles and interpolation error">
+</p>
+<p align="center">
+  <img src="docs/img/svi_fit.png" width="70%" alt="SVI fit vs linear interpolation on noisy quotes">
 </p>
 
 ## Why these design choices
@@ -199,6 +209,15 @@ invert with the best conditioning. And with no market data, the honest test is a
 trip through a smile whose answer is known (SSVI), measuring the interpolation error
 instead of eyeballing a pretty surface.
 
+**SVI: solve the linear part exactly, search only the nonlinear part.** Throwing all five
+SVI parameters at a generic optimizer invites local minima. For fixed (m, σ) the rest is a
+constrained linear least squares, small enough (3 variables, 6 constraints) to solve
+exactly by enumerating active sets, so the search is only 2-dimensional. The constraints
+are the ones that keep wings sane (Lee's bound) — and since they don't guarantee a
+non-negative density, every fit is also checked with Durrleman's condition. The test that
+matters is statistical: residuals on noisy quotes match least-squares theory, which a fit
+stuck in a local minimum would not.
+
 **Plots in Python, numbers in C++.** The library stays dependency-free; `ope_export`
 writes CSVs and a short matplotlib script draws them, so every figure traces back to
 engine output.
@@ -220,6 +239,9 @@ precision instead of rounding to 0; variance uses Welford's one-pass algorithm i
   surface holds vol constant; on the SSVI test that is off by up to 8 vol points on the
   deep wing before the first expiry (0.2 points at the money). Between expiries, linear interpolation in T is off by up to 1.1 vol
   points between 1m and 3m.
+- **SVI fits each expiry alone.** Fitted slices can cross (calendar arbitrage); this is
+  checked and reported, not prevented. On synthetic SSVI quotes the fit is exact because
+  the truth is SVI — real smiles would add model error.
 - **Model risk is out of scope.** Everything is validated *within* Black-Scholes; nothing
   here says the model is right for any real market.
 - **Timings are from one machine** and single-threaded.
@@ -228,11 +250,12 @@ precision instead of rounding to 0; variance uses Welford's one-pass algorithm i
 
 ```
 include/ope/   Option.hpp (types, payoff, validation), BlackScholes.hpp,
-               ImpliedVol.hpp, VolSurface.hpp, MonteCarlo.hpp, NormalRng.hpp
-src/           Option.cpp, BlackScholes.cpp, ImpliedVol.cpp, VolSurface.cpp, MonteCarlo.cpp,
+               ImpliedVol.hpp, VolSurface.hpp, Svi.hpp, MonteCarlo.hpp, NormalRng.hpp
+src/           Option.cpp, BlackScholes.cpp, ImpliedVol.cpp, VolSurface.cpp, Svi.cpp,
+               MonteCarlo.cpp,
                main.cpp (pricer CLI), bench_main.cpp (ope_bench), export_main.cpp (ope_export)
 tests/         test_black_scholes.cpp, test_implied_vol.cpp, test_vol_surface.cpp,
-               test_monte_carlo.cpp, test_mc_greeks.cpp
+               test_svi.cpp, test_monte_carlo.cpp, test_mc_greeks.cpp
 scripts/       plot.py (figures from ope_export's CSVs), requirements.txt
 docs/          results.md, benchmarks.md, img/ (figures)
 ```

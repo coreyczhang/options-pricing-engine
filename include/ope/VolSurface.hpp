@@ -1,8 +1,10 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include "ope/Option.hpp"
+#include "ope/Svi.hpp"
 
 namespace ope::surface {
 
@@ -45,6 +47,13 @@ struct Slice {
     double expiry;
     double forward;
     std::vector<Node> nodes;
+    std::optional<svi::Fit> svi;  ///< set when the surface uses SVI and the slice has >= 5 nodes
+};
+
+/// How each expiry's smile is drawn through its nodes.
+enum class SmileModel {
+    Linear,  ///< linear in total variance between nodes: exact at quotes, follows their noise
+    Svi,     ///< least-squares raw-SVI fit per expiry (svi::fit): smooth, wings by model
 };
 
 /// A static-arbitrage violation found on the quoted nodes.
@@ -86,8 +95,14 @@ class VolSurface {
 public:
     /// Throws std::invalid_argument on an invalid spot, rate or dividend
     /// yield, or if no quote can be inverted.
+    ///
+    /// With SmileModel::Svi each expiry with >= 5 nodes is fitted with raw SVI
+    /// and the fit replaces the linear smile at that expiry, including beyond
+    /// the outermost strikes (SVI's linear-in-k wings instead of flat vol);
+    /// slices with fewer nodes stay linear. Interpolation across expiries is
+    /// the same in both models.
     VolSurface(const std::vector<Quote>& quotes, double spot, double rate,
-               double div_yield = 0.0);
+               double div_yield = 0.0, SmileModel model = SmileModel::Linear);
 
     /// Interpolated implied vol at (strike, expiry). Throws on K <= 0 or T <= 0.
     double vol(double strike, double expiry) const;
@@ -100,13 +115,16 @@ public:
     const std::vector<Slice>& slices() const { return slices_; }
     const std::vector<Skipped>& skipped() const { return skipped_; }
 
-    /// Static-arbitrage checks on the quoted nodes:
-    ///   - calendar: at each node's log-moneyness, w must not fall from one
-    ///     expiry to the next;
-    ///   - butterfly: on each slice, call prices at the node strikes (from the
-    ///     node vols) must be decreasing and convex in strike.
-    /// Only the nodes are checked; linear interpolation between them can in
-    /// principle create arbitrage the node checks don't see.
+    /// Static-arbitrage checks, within each slice's quoted strike range:
+    ///   - calendar: w must not fall from one expiry to the next at fixed k.
+    ///     Linear smiles are checked at every node of both slices, which is
+    ///     exact (the difference of two piecewise-linear curves is extremal at
+    ///     a breakpoint); SVI smiles on a 201-point k grid plus the nodes.
+    ///   - butterfly, linear smiles: call prices at the node strikes must be
+    ///     decreasing and convex in strike. Only the nodes are checked; linear
+    ///     interpolation between them can create arbitrage this doesn't see.
+    ///   - butterfly, SVI smiles: Durrleman's g(k) >= 0 (svi::min_durrleman_g),
+    ///     reported at the worst k.
     std::vector<Violation> arbitrage_violations() const;
 
 private:

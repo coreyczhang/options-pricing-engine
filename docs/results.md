@@ -335,10 +335,62 @@ shown eleven times looks like a bias. With independent seeds the worst |z| is 1.
 
 ![Smiles and interpolation error](img/iv_smiles.png)
 
+## 10. Fitting SVI instead of interpolating
+
+§9's surface passes through every quote, so it passes their noise straight through, and
+outside the quoted strikes it can only hold vol flat. `ope::svi::fit` fits **raw SVI**
+per expiry, w(k) = a + b(ρ(k − m) + √((k − m)² + σ²)), and `VolSurface` uses it with
+`SmileModel::Svi` (interpolation across expiries is unchanged).
+
+**Method.** For fixed (m, σ) the other three parameters enter linearly (Zeliade / De Marco
+& Martini), so the inner fit is a 3-variable least squares over a polytope: a ≥ 0,
+|ρ| ≤ 1, and Lee's wing bound b(1 + |ρ|) ≤ 2. It is solved exactly by enumerating active
+constraint sets (a convex QP's optimum is the equality-constrained optimum of one of them).
+The outer problem over (m, ln σ) is 2-dimensional: a 41 × 25 grid, then Nelder–Mead.
+Weights 1/w make the objective approximately squared error in vol. A fit takes 10.7 ms per
+21-strike expiry (`ope_bench`).
+
+**Validation:**
+
+| check | result |
+|---|---|
+| quotes from an SSVI slice (exactly SVI, known parameters), 5 expiries | all five parameters recovered to < 1e-6; fit within 3e-9 vol of the quotes |
+| 20 bp noise, 60 draws: residual vs quotes | 0.865 × noise (least-squares theory with 5 of 21 degrees of freedom used: 0.873) |
+| same: error vs the true smile, at the quotes | 0.475 × noise (theory: √(5/21) = 0.488); linear interpolation's is 1.0 × |
+| 20 bp noise on $2.50 strikes, 10 draws: butterfly arbitrage reported | linear smile **470** (all noise), SVI **0** |
+| Durrleman's condition on 1,200 noisy fits (5–50 bp, 1m and 1y) | never violated |
+| Vogt's raw-SVI example (Gatheral & Jacquier 2014) | flagged: min g = −0.033 at k = 0.88 |
+| data with wing slope 3 (beyond Lee's 2) | fit stops exactly at the bound |
+
+The residual matching theory is the useful check on the optimizer: a fit stuck in a local
+minimum leaves residuals larger than σ√((n − p)/n), and across 60 draws it doesn't.
+
+![SVI fit vs linear interpolation on noisy quotes](img/svi_fit.png)
+
+**Reading this honestly:**
+
+- **The no-noise results are a best case.** The quotes come from SSVI, which *is* SVI, so
+  the fit can be exact, including in the wings. Real smiles are not exactly SVI; on real
+  quotes the fit's residual would include model error as well as noise.
+- **Extrapolation is better, not solved.** Beyond the quoted strikes SVI extends its fitted
+  wings instead of holding vol flat. In the figure that is −27 bp at K = 220 on the 1-year
+  smile with 20 bp noise (flat extrapolation: 19.5% vs a true 22.5%, a 3.0-point miss), but the wings
+  are estimated from the outermost quotes and inherit their noise.
+- **The error is smaller but correlated.** Linear interpolation's error is the noise at
+  each quote; SVI's is about half as large but smooth, so it moves neighbouring strikes
+  together. A fitted smile can be wrong in a consistent direction across a region.
+- **Each expiry is fitted alone.** Nothing forces fitted slices not to cross; `VolSurface`
+  checks for calendar arbitrage on a k-grid and reports it, but does not prevent it. A
+  joint SSVI fit across expiries would be calendar-free by construction.
+- **a ≥ 0 is a restriction.** It keeps the inner problem convex and w positive, but rules
+  out some valid smiles with a < 0.
+
 ## Next steps
 
-- **Fit SVI/SSVI to the quotes** instead of interpolating them: smooth, arbitrage-free by
-  construction, and sensible beyond the quoted range (fixes the extrapolation of §9).
+- **Fit SSVI jointly across expiries**, which makes the surface calendar-free by
+  construction (§10 fits each expiry alone and only reports crossings), and extend it before
+  the first expiry with a model instead of constant vol.
+- **Weight the SVI fit by bid-ask width** once real quotes exist, instead of 1/w.
 - **A real option-chain snapshot** as a §9 demo, saved in the repo so it stays reproducible.
 - **Importance sampling** for deep-OTM options (fixes §6).
 - **A sharper implied-vol starting guess** (e.g. Corrado–Miller, or Jäckel's rational

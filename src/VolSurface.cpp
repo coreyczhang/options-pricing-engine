@@ -30,7 +30,7 @@ bool valid_quote(const Quote& q) {
 }  // namespace
 
 VolSurface::VolSurface(const std::vector<Quote>& quotes, double spot, double rate,
-                       double div_yield)
+                       double div_yield, SmileModel model)
     : spot_(spot), rate_(rate), div_yield_(div_yield) {
     if (!(std::isfinite(spot) && spot > 0.0) || !std::isfinite(rate) ||
         !std::isfinite(div_yield))
@@ -58,7 +58,7 @@ VolSurface::VolSurface(const std::vector<Quote>& quotes, double spot, double rat
         const double T = key.first;
         const double K = key.second;
         if (!slice || slice->expiry != T) {
-            slices_.push_back({T, forward(T), {}});
+            slices_.push_back({T, forward(T), {}, std::nullopt});
             slice = &slices_.back();
             guess = 0.0;
         }
@@ -89,6 +89,17 @@ VolSurface::VolSurface(const std::vector<Quote>& quotes, double spot, double rat
                                  [](const Slice& s) { return s.nodes.empty(); }),
                   slices_.end());
     if (slices_.empty()) throw std::invalid_argument("no quote could be inverted");
+
+    if (model == SmileModel::Svi)
+        for (Slice& s : slices_) {
+            if (s.nodes.size() < 5) continue;
+            std::vector<double> k, w;
+            for (const Node& n : s.nodes) {
+                k.push_back(n.log_moneyness);
+                w.push_back(n.total_variance);
+            }
+            s.svi = svi::fit(k, w, s.expiry);
+        }
 }
 
 double VolSurface::forward(double expiry) const {
@@ -96,6 +107,7 @@ double VolSurface::forward(double expiry) const {
 }
 
 double VolSurface::slice_variance(const Slice& s, double k) const {
+    if (s.svi) return s.svi->params.w(k);
     const std::vector<Node>& n = s.nodes;
     if (k <= n.front().log_moneyness) return n.front().total_variance;
     if (k >= n.back().log_moneyness) return n.back().total_variance;
@@ -134,20 +146,33 @@ std::vector<Violation> VolSurface::arbitrage_violations() const {
     for (std::size_t i = 0; i + 1 < slices_.size(); ++i) {
         const Slice& a = slices_[i];
         const Slice& b = slices_[i + 1];
-        auto check = [&](const Node& node) {
-            const double wa = slice_variance(a, node.log_moneyness);
-            const double wb = slice_variance(b, node.log_moneyness);
+        auto check_k = [&](double k) {
+            const double wa = slice_variance(a, k);
+            const double wb = slice_variance(b, k);
             if (wb < wa * (1.0 - 1e-10))
-                out.push_back({Violation::Kind::Calendar, b.expiry,
-                               b.forward * std::exp(node.log_moneyness), wa - wb});
+                out.push_back({Violation::Kind::Calendar, b.expiry, b.forward * std::exp(k),
+                               wa - wb});
         };
-        for (const Node& node : a.nodes) check(node);
-        for (const Node& node : b.nodes) check(node);
+        for (const Node& node : a.nodes) check_k(node.log_moneyness);
+        for (const Node& node : b.nodes) check_k(node.log_moneyness);
+        if (a.svi || b.svi) {  // smooth curves can cross between nodes
+            const double lo = std::max(a.nodes.front().log_moneyness, b.nodes.front().log_moneyness);
+            const double hi = std::min(a.nodes.back().log_moneyness, b.nodes.back().log_moneyness);
+            for (int j = 0; j <= 200 && lo < hi; ++j) check_k(lo + (hi - lo) * j / 200.0);
+        }
     }
 
     // Butterfly: call prices at the node strikes, slopes between neighbours
     // must lie in [-e^{-rT}, 0] and be non-decreasing.
     for (const Slice& s : slices_) {
+        if (s.svi) {
+            const svi::DurrlemanMin g = svi::min_durrleman_g(
+                s.svi->params, s.nodes.front().log_moneyness, s.nodes.back().log_moneyness);
+            if (g.g < -1e-10)
+                out.push_back({Violation::Kind::Butterfly, s.expiry, s.forward * std::exp(g.k),
+                               -g.g});
+            continue;
+        }
         const std::size_t n = s.nodes.size();
         if (n < 2) continue;
         std::vector<double> c(n), slope(n - 1);

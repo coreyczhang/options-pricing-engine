@@ -242,6 +242,60 @@ def vol_surface(data_dir, out_dir):
     plt.close(fig)
 
 
+# ---- SVI fit vs linear interpolation on noisy quotes -------------------------------
+
+def svi_fit(data_dir, out_dir):
+    quotes = read(data_dir / "svi_quotes.csv")
+    curves = read(data_dir / "svi_curves.csv")
+    expiries = sorted({float(r["expiry"]) for r in quotes})
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7.2), constrained_layout=True,
+                             gridspec_kw={"width_ratios": [1.15, 1]})
+    fig.get_layout_engine().set(rect=(0, 0, 1, 0.88))
+    for row, T in enumerate(expiries):
+        q = [r for r in quotes if abs(float(r["expiry"]) - T) < 1e-9]
+        c = [r for r in curves if abs(float(r["expiry"]) - T) < 1e-9]
+        K = np.array([float(r["strike"]) for r in c])
+        svi = np.array([float(r["svi_vol"]) for r in c]) * 100
+        lin = np.array([float(r["linear_vol"]) for r in c]) * 100
+        true = np.array([float(r["true_vol"]) for r in c]) * 100
+        qk = [float(r["strike"]) for r in q]
+        lo, hi = min(qk), max(qk)
+
+        left, right = axes[row]
+        for ax in (left, right):
+            ax.axvspan(K[0], lo, color=GRID, alpha=0.5, linewidth=0, zorder=0)
+            ax.axvspan(hi, K[-1], color=GRID, alpha=0.5, linewidth=0, zorder=0)
+            ax.set_xlim(K[0], K[-1])
+        left.plot(qk, [float(r["quote_vol"]) * 100 for r in q], "o", color=MUTED, markersize=3.5,
+                  label="noisy quotes")
+        left.plot(K, lin, color=ORANGE, linewidth=1.0, label="linear interpolation")
+        left.plot(K, svi, color=BLUE, label="SVI fit")
+        left.plot(K, true, color=INK, linewidth=1.0, linestyle=(0, (4, 3)), label="true smile")
+        left.set_title(f"{expiry_label(T)} smile", loc="left")
+        left.set_ylabel("implied vol (%)")
+
+        right.axhline(0.0, color=AXIS, linewidth=0.8)
+        right.plot(K, (lin - true) * 100, color=ORANGE, linewidth=1.0, label="linear")
+        right.plot(K, (svi - true) * 100, color=BLUE, label="SVI")
+        right.set_title(f"{expiry_label(T)}: error vs true smile", loc="left")
+        right.set_ylabel("basis points of vol")
+        right.set_ylim(-80, 80)
+        if row == 1:
+            left.set_xlabel("strike")
+            right.set_xlabel("strike")
+        if row == 0:
+            left.legend(loc="upper right")
+            right.legend(loc="upper right")
+    suptitle(fig, "Fitting SVI instead of interpolating noisy quotes",
+             "SSVI smile + 20 bp of Gaussian noise on every quote, $2.50 strikes. Shaded: "
+             "outside the quoted strikes, where both curves extrapolate\n(linear: flat vol; "
+             "SVI: its fitted wings). Inside, SVI's error is about half the noise; linear "
+             "interpolation passes the noise straight through.")
+    fig.savefig(out_dir / "svi_fit.png", dpi=150)
+    plt.close(fig)
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit("usage: plot.py <csv_dir> <out_dir>")
@@ -250,7 +304,8 @@ def main():
     greeks_vs_spot(data_dir, out_dir)
     mc_vs_analytic(data_dir, out_dir)
     vol_surface(data_dir, out_dir)
-    print(f"wrote 4 figures to {out_dir}")
+    svi_fit(data_dir, out_dir)
+    print(f"wrote 5 figures to {out_dir}")
 
 
 if __name__ == "__main__":

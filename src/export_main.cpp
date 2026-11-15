@@ -17,6 +17,7 @@
 
 #include "ope/BlackScholes.hpp"
 #include "ope/MonteCarlo.hpp"
+#include "ope/NormalRng.hpp"
 #include "ope/VolSurface.hpp"
 
 namespace {
@@ -130,6 +131,47 @@ void vol_surface(const std::string& dir) {
                 s.arbitrage_violations().size());
 }
 
+// ---- SVI fit vs linear interpolation on noisy quotes -------------------------
+// The same SSVI smile with 20 bp of Gaussian noise on every vol, $2.50 strikes,
+// at 1 month and 1 year (NormalRng: identical draws on every platform).
+void svi_fit(const std::string& dir) {
+    const std::vector<double> expiries = {1.0 / 12, 1.0};
+    ope::NormalRng rng(1);
+    std::vector<ope::surface::Quote> quotes;
+    for (double T : expiries)
+        for (double K = 60.0; K <= 160.0 + 1e-9; K += 2.5) {
+            const double vol = ssvi_vol(K, T) + 0.002 * rng.next();
+            for (OptionType type : {OptionType::Call, OptionType::Put})
+                quotes.push_back(
+                    {type, K, T, ope::bs::price({type, K, T}, {kSpot, kRate, vol, kDiv})});
+        }
+    const ope::surface::VolSurface lin(quotes, kSpot, kRate, kDiv);
+    const ope::surface::VolSurface fit(quotes, kSpot, kRate, kDiv,
+                                       ope::surface::SmileModel::Svi);
+
+    FILE* q = open_csv(dir, "svi_quotes.csv", "expiry,strike,quote_vol");
+    for (const ope::surface::Slice& s : fit.slices())
+        for (const ope::surface::Node& n : s.nodes)
+            std::fprintf(q, "%.6f,%.2f,%.12g\n", s.expiry, n.strike, n.vol);
+    std::fclose(q);
+
+    FILE* c = open_csv(dir, "svi_curves.csv", "expiry,strike,svi_vol,linear_vol,true_vol");
+    for (double T : expiries)
+        for (double K = 40.0; K <= 220.0 + 1e-9; K += 0.5)
+            std::fprintf(c, "%.6f,%.2f,%.12g,%.12g,%.12g\n", T, K, fit.vol(K, T), lin.vol(K, T),
+                         ssvi_vol(K, T));
+    std::fclose(c);
+
+    int lin_bf = 0;
+    for (const auto& v : lin.arbitrage_violations())
+        lin_bf += v.kind == ope::surface::Violation::Kind::Butterfly;
+    for (const ope::surface::Slice& s : fit.slices())
+        std::printf("svi: T=%.4f rmse vs quotes %.1f bp (max %.1f bp)\n", s.expiry,
+                    s.svi->rmse_vol * 1e4, s.svi->max_abs_vol * 1e4);
+    std::printf("svi: butterfly violations: linear %d, svi %zu\n", lin_bf,
+                fit.arbitrage_violations().size());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -143,7 +185,9 @@ int main(int argc, char** argv) {
     greeks_vs_spot(dir);
     mc_vs_analytic(dir);
     vol_surface(dir);
-    std::printf("wrote greeks_vs_spot.csv, mc_greeks.csv, iv_nodes.csv, iv_surface.csv to %s\n",
+    svi_fit(dir);
+    std::printf("wrote greeks_vs_spot.csv, mc_greeks.csv, iv_nodes.csv, iv_surface.csv, "
+                "svi_quotes.csv, svi_curves.csv to %s\n",
                 dir.c_str());
     return EXIT_SUCCESS;
 }

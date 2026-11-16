@@ -183,6 +183,28 @@ TEST(McGreeksCrn, GammaNoiseGrowsLikeOneOverSqrtBump) {
     EXPECT_NEAR(gamma_se(1e-3) / gamma_se(1e-2), std::sqrt(10.0), 0.15 * std::sqrt(10.0));
 }
 
+TEST(McGreeksCrn, VegaThetaRhoNoiseStaysBoundedAsBumpsShrink) {
+    // Same argument as delta: on common random numbers each path's discounted
+    // payoff is Lipschitz in sigma, T and r, so the per-path difference stays
+    // O(1) as the bump shrinks and the std error barely moves. Without CRN
+    // (say, the down-bump evaluated on a different draw) it grows like
+    // 1/bump: ~10x for this 10x smaller bump. The mutation check
+    // (scripts/mutation_check.py) found that a vega with CRN broken passed
+    // every other test — it stays unbiased; only its noise gives it away.
+    const Case c = cases()[0];
+    auto se = [&](double scale) {
+        mc::Bumps b;
+        b.vol *= scale;
+        b.time *= scale;
+        b.rate *= scale;
+        return mc::greeks(option(c), market(c), mc::Config{100'000, 5}, b).std_error;
+    };
+    const Greeks big = se(1.0), small = se(0.1);
+    EXPECT_NEAR(small.vega / big.vega, 1.0, 0.1);
+    EXPECT_NEAR(small.theta / big.theta, 1.0, 0.1);
+    EXPECT_NEAR(small.rho / big.rho, 1.0, 0.1);
+}
+
 // ---- Degenerate inputs & validation ---------------------------------------
 
 TEST(McGreeksDegenerate, ZeroVolUsesForwardVolBumpAndIsDeterministic) {

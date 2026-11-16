@@ -129,6 +129,10 @@ ope::surface::VolSurface smooth(quotes, 100.0, 0.03, 0.01, ope::surface::SmileMo
   residual and error match least-squares theory (0.865 and 0.475 × noise vs 0.873 and
   0.488), halving linear interpolation's error, and it reports no butterfly arbitrage where
   the interpolated noisy smile reports 470 spurious ones.
+- **The tests can fail:** a mutation check injects 21 deliberate bugs (wrong drift,
+  inflated error bars, broken common random numbers, the same wrong convention in both
+  pricers…) and the suite catches all 21; CI enforces it. The first run caught two holes
+  in the suite, now fixed.
 - **Speed (Apple M3):** closed form 57 ns; MC 35 ns/path plain, 20 ns/path antithetic,
   72 ns/path for all five Greeks.
 
@@ -218,6 +222,13 @@ non-negative density, every fit is also checked with Durrleman's condition. The 
 matters is statistical: residuals on noisy quotes match least-squares theory, which a fit
 stuck in a local minimum would not.
 
+**Prove the tests can fail.** Agreement between two pricers is only evidence if a bug would
+break it. `scripts/mutation_check.py` injects bugs one at a time and checks that some test
+fails. The most informative mutants put the *same* wrong convention into both pricers:
+Monte Carlo still agrees with Black-Scholes, so only checks that don't go through Monte
+Carlo — published reference values, put-call parity — can catch them, and they do
+([results §11](docs/results.md#11-can-the-tests-fail-a-mutation-check)).
+
 **Plots in Python, numbers in C++.** The library stays dependency-free; `ope_export`
 writes CSVs and a short matplotlib script draws them, so every figure traces back to
 engine output.
@@ -256,7 +267,8 @@ src/           Option.cpp, BlackScholes.cpp, ImpliedVol.cpp, VolSurface.cpp, Svi
                main.cpp (pricer CLI), bench_main.cpp (ope_bench), export_main.cpp (ope_export)
 tests/         test_black_scholes.cpp, test_implied_vol.cpp, test_vol_surface.cpp,
                test_svi.cpp, test_monte_carlo.cpp, test_mc_greeks.cpp
-scripts/       plot.py (figures from ope_export's CSVs), requirements.txt
+scripts/       plot.py (figures from ope_export's CSVs), requirements.txt,
+               mutation_check.py (injects bugs, checks the suite catches them)
 docs/          results.md, benchmarks.md, img/ (figures)
 ```
 

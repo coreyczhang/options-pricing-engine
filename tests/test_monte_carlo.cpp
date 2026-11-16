@@ -2,12 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
 
 #include "ope/BlackScholes.hpp"
+#include "ope/NormalRng.hpp"
 
 namespace ope {
 namespace {
@@ -194,6 +196,45 @@ TEST(MonteCarloAntithetic, RejectsOddOrSinglePairPathCounts) {
 }
 
 // ---- Determinism -----------------------------------------------------------
+
+TEST(MonteCarlo, PriceAndStdErrorAreTheSampleStatisticsOfTheDiscountedPayoffs) {
+    // Recompute tiny MC runs by hand from the same normal draws: the price is
+    // the mean of e^{-rT} payoff(S_T), the std error is the sample standard
+    // deviation (n - 1 denominator) over sqrt(n), and for antithetic the
+    // sampling unit is the pair average. Deterministic, so it pins down
+    // details below any statistical test's resolution: dividing by n instead
+    // of n - 1 changes the std error by ~1/(2n), 2.5e-6 relative at 200k
+    // paths, and the mutation check (scripts/mutation_check.py) confirmed no
+    // statistical test here could see it. At n = 5 it is an 11% change.
+    const Case c = cases()[4];  // deep ITM call with q != 0: every path pays
+    const double T = c.T;
+    const double drift = (c.r - c.q - 0.5 * c.vol * c.vol) * T;
+    const double disc = std::exp(-c.r * T);
+    auto value = [&](double z) {
+        return disc * std::max(c.S * std::exp(drift + c.vol * std::sqrt(T) * z) - c.K, 0.0);
+    };
+    for (bool antithetic : {false, true}) {
+        const std::size_t paths = antithetic ? 10 : 5;
+        NormalRng rng(123);
+        std::vector<double> units;
+        for (std::size_t i = 0; i < (antithetic ? paths / 2 : paths); ++i) {
+            const double z = rng.next();
+            units.push_back(antithetic ? 0.5 * (value(z) + value(-z)) : value(z));
+        }
+        double mean = 0.0;
+        for (double u : units) mean += u / units.size();
+        double ss = 0.0;
+        for (double u : units) ss += (u - mean) * (u - mean);
+        const double se = std::sqrt(ss / (units.size() - 1.0) / units.size());
+
+        const mc::Result r = mc::price(EuropeanOption{c.type, c.K, c.T},
+                                       Market{c.S, c.r, c.vol, c.q},
+                                       mc::Config{paths, 123, antithetic});
+        ASSERT_GT(se, 0.0);  // some paths finish in the money
+        EXPECT_NEAR(r.price, mean, 1e-12 * std::max(1.0, mean)) << "antithetic=" << antithetic;
+        EXPECT_NEAR(r.std_error, se, 1e-12 * se) << "antithetic=" << antithetic;
+    }
+}
 
 TEST(MonteCarlo, SameSeedReproducesExactly) {
     const Case c = cases()[0];

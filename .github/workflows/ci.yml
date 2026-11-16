@@ -30,6 +30,11 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
+      # Injects deliberate bugs one at a time into a scratch copy and checks
+      # that some test fails for each; exits non-zero if any bug survives.
+      - name: Mutation check (the tests can fail)
+        run: python3 scripts/mutation_check.py
+
       - name: CLI smoke test (Hull Greek-letters and implied-vol examples)
         run: |
           ./build/pricer call 49 50 0.3846 0.05 0.20

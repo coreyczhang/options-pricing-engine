@@ -385,6 +385,43 @@ minimum leaves residuals larger than σ√((n − p)/n), and across 60 draws it 
 - **a ≥ 0 is a restriction.** It keeps the inner problem convex and w positive, but rules
   out some valid smiles with a < 0.
 
+## 11. Can the tests fail? A mutation check
+
+Agreement between two pricers only means something if a bug would break it. So
+`scripts/mutation_check.py` injects deliberate bugs, one at a time, into a scratch copy of
+the repository, rebuilds, runs the full suite, and records which tests fail. CI runs it on
+every push and fails if any mutant survives.
+
+| mutant group | examples | caught by MC-vs-BS agreement? | what catches it |
+|---|---|---|---|
+| Monte Carlo pricer only | drift without the −σ²/2 Itô term, drift without q, discount at r − q, normals with variance ½ | **yes** | agreement, plus the convergence and calibration tests |
+| the error bar | std error 2× too large or ½ too small; antithetic error over the halves; every normal drawn twice | **no** for 3 of 4 | the calibration test (§2); the 2×-too-large bar makes agreement *easier* to pass |
+| antithetic pairing | pair evaluates f(Z) twice instead of f(Z), f(−Z) | no (it is unbiased) | the variance-reduction tests (§3) |
+| Monte Carlo Greeks | delta over h not 2h, theta sign, common random numbers broken for delta/vega/theta/rho | for the biased ones | bias: agreement with the BS finite difference; broken CRN: noise-scaling tests (§5) |
+| Black-Scholes only | N(d1)/N(d2) swapped, wrong sign on σ√T/2 | yes | Hull/Haug reference values, put-call parity, and agreement |
+| **shared: the same wrong convention in both pricers** | both ignore dividends; both skip discounting; both grow the stock at r + q | **no — 0 agreement failures in all three** | Hull/Haug reference values, put-call parity with an explicit S e^(−qT), the zero-vol forward limit |
+
+**Two mutants survived the first run**, and each exposed a real hole:
+
+- **Vega with common random numbers broken** (down-bump evaluated on −Z). The estimate stays
+  unbiased, so every agreement test passed; only its noise is wrong, and the noise-scaling
+  tests covered delta and gamma only. Theta and rho had the same hole. Fixed by
+  `McGreeksCrn.VegaThetaRhoNoiseStaysBoundedAsBumpsShrink`: with CRN their std errors stay
+  flat when the bumps shrink 10×; without, they grow ~10×.
+- **Variance divided by n instead of n − 1.** A 1/(2n) change, about 2.5e-6 at 200k paths:
+  no statistical test can resolve it. Fixed by a deterministic test,
+  `MonteCarlo.PriceAndStdErrorAreTheSampleStatisticsOfTheDiscountedPayoffs`, that recomputes
+  5- and 10-path runs by hand from the same draws, where the difference is 11%.
+
+After those two tests, **21 of 21 mutants are caught**.
+
+**What this shows and what it doesn't.** The shared mutants are the important result:
+Monte Carlo agreeing with Black-Scholes cannot detect a convention both get wrong, and in
+all three cases not one agreement test failed. They are caught only because Black-Scholes
+is also pinned to published numbers and identities that don't go through Monte Carlo. A
+mutation check is only as good as the mutants: these are bugs I thought of, so 21/21 says
+the suite catches this list, not every possible bug.
+
 ## Next steps
 
 - **Fit SSVI jointly across expiries**, which makes the surface calendar-free by

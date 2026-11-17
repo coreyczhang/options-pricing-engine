@@ -172,6 +172,62 @@ void svi_fit(const std::string& dir) {
                 fit.arbitrage_violations().size());
 }
 
+// ---- Joint SSVI vs per-slice SVI and linear ---------------------------------
+// (a) Three expiries 0.01y apart, 20 bp noise (seed 3 of the test
+// VolSurfaceSsvi.IsArbitrageFreeWherePerSliceSviFitsCross): the calendar
+// spread w(T_{i+1}, k) - w(T_i, k), negative = calendar arbitrage.
+// (b) Exact quotes at the five usual expiries; error at T = 0.05, before the
+// first expiry, where linear holds vol constant and SSVI scales theta.
+void ssvi_fit(const std::string& dir) {
+    using ope::surface::SmileModel;
+    using ope::surface::VolSurface;
+    auto quotes = [](const std::vector<double>& Ts, double noise, std::uint64_t seed) {
+        ope::NormalRng rng(seed);
+        std::vector<ope::surface::Quote> q;
+        for (double T : Ts)
+            for (double K = 60.0; K <= 160.0 + 1e-9; K += 5.0) {
+                const double v = ssvi_vol(K, T) + noise * rng.next();
+                for (OptionType type : {OptionType::Call, OptionType::Put})
+                    q.push_back({type, K, T, ope::bs::price({type, K, T}, {kSpot, kRate, v, kDiv})});
+            }
+        return q;
+    };
+    const std::vector<double> close = {0.5, 0.51, 0.52};
+    const auto qc = quotes(close, 0.002, 3);
+    const VolSurface svi(qc, kSpot, kRate, kDiv, SmileModel::Svi);
+    const VolSurface ss(qc, kSpot, kRate, kDiv, SmileModel::Ssvi);
+    FILE* c = open_csv(dir, "ssvi_calendar.csv", "pair,strike,svi_dw,ssvi_dw");
+    for (std::size_t i = 0; i + 1 < close.size(); ++i)
+        for (double K = 60.0; K <= 160.0 + 1e-9; K += 0.5) {
+            const double k = std::log(K / svi.forward(close[i]));  // forwards differ by ~0.02%
+            std::fprintf(c, "%zu,%.2f,%.12g,%.12g\n", i, K,
+                         svi.total_variance(k, close[i + 1]) - svi.total_variance(k, close[i]),
+                         ss.total_variance(k, close[i + 1]) - ss.total_variance(k, close[i]));
+        }
+    std::fclose(c);
+    auto calendar = [](const VolSurface& s) {
+        int n = 0;
+        for (const auto& v : s.arbitrage_violations())
+            n += v.kind == ope::surface::Violation::Kind::Calendar;
+        return n;
+    };
+    std::printf("ssvi: close expiries, calendar violations: svi %d, ssvi %d\n", calendar(svi),
+                calendar(ss));
+
+    const auto qe = quotes({1.0 / 12, 0.25, 0.5, 1.0, 2.0}, 0.0, 1);
+    const VolSurface lin(qe, kSpot, kRate, kDiv);
+    const VolSurface fit(qe, kSpot, kRate, kDiv, SmileModel::Ssvi);
+    FILE* e = open_csv(dir, "ssvi_extrapolation.csv", "expiry,strike,linear_err,ssvi_err");
+    for (double T : {0.05})
+        for (double K = 60.0; K <= 160.0 + 1e-9; K += 0.5)
+            std::fprintf(e, "%.4f,%.2f,%.12g,%.12g\n", T, K, lin.vol(K, T) - ssvi_vol(K, T),
+                         fit.vol(K, T) - ssvi_vol(K, T));
+    std::fclose(e);
+    const ope::ssvi::Fit& f = *fit.ssvi();
+    std::printf("ssvi: exact quotes, fitted rho %.6f eta %.6f gamma %.6f\n", f.params.rho,
+                f.params.eta, f.params.gamma);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -186,8 +242,9 @@ int main(int argc, char** argv) {
     mc_vs_analytic(dir);
     vol_surface(dir);
     svi_fit(dir);
+    ssvi_fit(dir);
     std::printf("wrote greeks_vs_spot.csv, mc_greeks.csv, iv_nodes.csv, iv_surface.csv, "
-                "svi_quotes.csv, svi_curves.csv to %s\n",
+                "svi_quotes.csv, svi_curves.csv, ssvi_calendar.csv, ssvi_extrapolation.csv to %s\n",
                 dir.c_str());
     return EXIT_SUCCESS;
 }

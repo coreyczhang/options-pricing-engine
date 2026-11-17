@@ -100,6 +100,21 @@ VolSurface::VolSurface(const std::vector<Quote>& quotes, double spot, double rat
             }
             s.svi = svi::fit(k, w, s.expiry);
         }
+
+    if (model == SmileModel::Ssvi) {
+        std::vector<ssvi::SliceData> data;
+        for (const Slice& s : slices_) {
+            if (s.nodes.size() < 3) continue;
+            ssvi::SliceData d{s.expiry, {}, {}};
+            for (const Node& n : s.nodes) {
+                d.k.push_back(n.log_moneyness);
+                d.w.push_back(n.total_variance);
+            }
+            data.push_back(std::move(d));
+        }
+        if (data.empty()) throw std::invalid_argument("SSVI needs a slice with >= 3 quotes");
+        ssvi_ = ssvi::fit(std::move(data));
+    }
 }
 
 double VolSurface::forward(double expiry) const {
@@ -107,6 +122,7 @@ double VolSurface::forward(double expiry) const {
 }
 
 double VolSurface::slice_variance(const Slice& s, double k) const {
+    if (ssvi_) return ssvi_->w(k, s.expiry);
     if (s.svi) return s.svi->params.w(k);
     const std::vector<Node>& n = s.nodes;
     if (k <= n.front().log_moneyness) return n.front().total_variance;
@@ -121,6 +137,7 @@ double VolSurface::slice_variance(const Slice& s, double k) const {
 
 double VolSurface::total_variance(double k, double T) const {
     if (!(T > 0.0) || !std::isfinite(k)) throw std::invalid_argument("need T > 0, finite k");
+    if (ssvi_) return ssvi_->w(k, T);
     const Slice& first = slices_.front();
     const Slice& last = slices_.back();
     if (T <= first.expiry) return slice_variance(first, k) * T / first.expiry;
@@ -155,7 +172,7 @@ std::vector<Violation> VolSurface::arbitrage_violations() const {
         };
         for (const Node& node : a.nodes) check_k(node.log_moneyness);
         for (const Node& node : b.nodes) check_k(node.log_moneyness);
-        if (a.svi || b.svi) {  // smooth curves can cross between nodes
+        if (a.svi || b.svi || ssvi_) {  // smooth curves can cross between nodes
             const double lo = std::max(a.nodes.front().log_moneyness, b.nodes.front().log_moneyness);
             const double hi = std::min(a.nodes.back().log_moneyness, b.nodes.back().log_moneyness);
             for (int j = 0; j <= 200 && lo < hi; ++j) check_k(lo + (hi - lo) * j / 200.0);
@@ -165,9 +182,11 @@ std::vector<Violation> VolSurface::arbitrage_violations() const {
     // Butterfly: call prices at the node strikes, slopes between neighbours
     // must lie in [-e^{-rT}, 0] and be non-decreasing.
     for (const Slice& s : slices_) {
-        if (s.svi) {
+        if (s.svi || ssvi_) {
+            const svi::Params p =
+                ssvi_ ? ssvi_->params.raw(ssvi_->theta(s.expiry)) : s.svi->params;
             const svi::DurrlemanMin g = svi::min_durrleman_g(
-                s.svi->params, s.nodes.front().log_moneyness, s.nodes.back().log_moneyness);
+                p, s.nodes.front().log_moneyness, s.nodes.back().log_moneyness);
             if (g.g < -1e-10)
                 out.push_back({Violation::Kind::Butterfly, s.expiry, s.forward * std::exp(g.k),
                                -g.g});

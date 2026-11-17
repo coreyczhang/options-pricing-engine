@@ -32,6 +32,7 @@ add_library(ope
     src/ImpliedVol.cpp
     src/VolSurface.cpp
     src/Svi.cpp
+    src/Ssvi.cpp
 )
 target_include_directories(ope PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(ope PRIVATE ope_warnings)

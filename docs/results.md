@@ -347,7 +347,7 @@ per expiry, w(k) = a + b(ρ(k − m) + √((k − m)² + σ²)), and `VolSurface
 |ρ| ≤ 1, and Lee's wing bound b(1 + |ρ|) ≤ 2. It is solved exactly by enumerating active
 constraint sets (a convex QP's optimum is the equality-constrained optimum of one of them).
 The outer problem over (m, ln σ) is 2-dimensional: a 41 × 25 grid, then Nelder–Mead.
-Weights 1/w make the objective approximately squared error in vol. A fit takes 10.7 ms per
+Weights 1/w make the objective approximately squared error in vol. A fit takes 10.8 ms per
 21-strike expiry (`ope_bench`).
 
 **Validation:**
@@ -380,8 +380,8 @@ minimum leaves residuals larger than σ√((n − p)/n), and across 60 draws it 
   each quote; SVI's is about half as large but smooth, so it moves neighbouring strikes
   together. A fitted smile can be wrong in a consistent direction across a region.
 - **Each expiry is fitted alone.** Nothing forces fitted slices not to cross; `VolSurface`
-  checks for calendar arbitrage on a k-grid and reports it, but does not prevent it. A
-  joint SSVI fit across expiries would be calendar-free by construction.
+  checks for calendar arbitrage on a k-grid and reports it, but does not prevent it. The
+  joint SSVI fit of §12 is calendar-free by construction.
 - **a ≥ 0 is a restriction.** It keeps the inner problem convex and w positive, but rules
   out some valid smiles with a < 0.
 
@@ -400,6 +400,7 @@ every push and fails if any mutant survives.
 | Monte Carlo Greeks | delta over h not 2h, theta sign, common random numbers broken for delta/vega/theta/rho | for the biased ones | bias: agreement with the BS finite difference; broken CRN: noise-scaling tests (§5) |
 | Black-Scholes only | N(d1)/N(d2) swapped, wrong sign on σ√T/2 | yes | Hull/Haug reference values, put-call parity, and agreement |
 | **shared: the same wrong convention in both pricers** | both ignore dividends; both skip discounting; both grow the stock at r + q | **no — 0 agreement failures in all three** | Hull/Haug reference values, put-call parity with an explicit S e^(−qT), the zero-vol forward limit |
+| joint SSVI fit (§12) | weights 1/w instead of 1/(wT); no pooling of thetas; η bound 2× too loose; flat θ before the first expiry | n/a | noise-vs-theory test, calendar-arbitrage pooling test, arbitrage-bound tests, extrapolation tests |
 
 **Two mutants survived the first run**, and each exposed a real hole:
 
@@ -413,21 +414,91 @@ every push and fails if any mutant survives.
   `MonteCarlo.PriceAndStdErrorAreTheSampleStatisticsOfTheDiscountedPayoffs`, that recomputes
   5- and 10-path runs by hand from the same draws, where the difference is 11%.
 
-After those two tests, **21 of 21 mutants are caught**.
+After those two tests, **21 of 21 mutants are caught**; with the 4 SSVI mutants added in
+§12, 25 of 25.
 
 **What this shows and what it doesn't.** The shared mutants are the important result:
 Monte Carlo agreeing with Black-Scholes cannot detect a convention both get wrong, and in
 all three cases not one agreement test failed. They are caught only because Black-Scholes
 is also pinned to published numbers and identities that don't go through Monte Carlo. A
-mutation check is only as good as the mutants: these are bugs I thought of, so 21/21 says
+mutation check is only as good as the mutants: these are bugs I thought of, so 25/25 says
 the suite catches this list, not every possible bug.
+
+## 12. One fit for all expiries: joint SSVI
+
+§10 fits each expiry alone, so nothing stops two fitted smiles from crossing, and before
+the first expiry the surface can only hold vol constant. `ope::ssvi::fit` fits **SSVI**
+(Gatheral & Jacquier 2014) to all expiries at once:
+
+  w(k, θ) = θ/2 · (1 + ρφk + √((φk + ρ)² + 1 − ρ²)),   φ(θ) = η / (θ^γ (1 + θ)^(1−γ))
+
+Three numbers are shared by every expiry (skew ρ, curvature η, decay γ); each expiry adds
+only its ATM total variance θ. `VolSurface` uses it with `SmileModel::Ssvi`.
+
+**No arbitrage by construction.** The surface is free of static arbitrage if θ is
+non-decreasing in T, η(1 + |ρ|) ≤ 2 and 0 ≤ γ ≤ ½. The fit searches only that set: the
+three globals are optimized in coordinates that map onto exactly that box (ρ = sin u,
+γ = (1 + sin v)/4, η = (1 + sin z)/(1 + |ρ|)), and the θ's are made monotone by
+pool-adjacent-violators. Between expiries θ is linear in T, before the first it scales as
+θ₁T/T₁, so every point of the surface (not only the fitted slices) is on the same SSVI
+surface and keeps the guarantee.
+
+**Method.** For fixed globals each slice's θ is a 1-D problem (scan, then golden section);
+slices that want decreasing θ are pooled and refitted with one common θ. That profiles 5
+θ's out of an 8-parameter problem, leaving Nelder–Mead in 3 dimensions, started from the
+best 3 of a 63-point grid. 96.5 ms per fit for 5 expiries × 21 strikes (`ope_bench`).
+
+**A weighting bug the theory test caught.** The first version reused §10's weights 1/w.
+Within one expiry that is squared vol error up to a constant; across expiries it is not:
+d(vol) = dw/(2 vol T), so (d vol)² ∝ dw²/(wT), and 1/w counts the 2-year slice 24× the
+1-month one. The noise test below measured the error vs the truth at 0.323 × noise against
+a theoretical 0.276. Weighting by 1/(wT) gives 0.283. It is now a mutant (§11), and the test
+fails it.
+
+**Validation** (`tests/test_ssvi.cpp`; the same SSVI truth as §9–10, 5 expiries × 21 strikes):
+
+| check | result |
+|---|---|
+| exact quotes | ρ, η, γ and all five θ recovered to < 1e-9 (γ = ½ sits on its bound); fit within 3e-14 vol of the quotes |
+| 20 bp noise, 60 draws: residual vs quotes | 0.954 × noise (theory, 8 of 105 degrees of freedom used: 0.961) |
+| same: error vs the true surface, at the quotes | 0.283 × noise (theory √(8/105) = 0.276; per-slice SVI 0.475, linear 1.0) |
+| expiries 0.01y apart, 20 bp noise, 3 draws: calendar violations | per-slice SVI **30, 13, 88**; SSVI **0** |
+| quotes with butterfly arbitrage (η = 4, min Durrleman g = −0.39) | fit stays at η(1 + \|ρ\|) = 2, g ≥ 0 at every T |
+| quotes where a later expiry has *less* variance (calendar arbitrage) | the two θ's pooled to one value |
+| between quoted expiries, exact quotes: worst error | **31 bp** (linear: 113 bp) |
+| before the first expiry (T = 0.02–0.08): worst error | **76 bp** (linear: 2,625 bp); at K = 60, T = 0.05: −33 bp vs −833 bp |
+
+![Joint SSVI vs per-slice SVI and linear interpolation](img/ssvi_fit.png)
+
+**Reading this honestly:**
+
+- **The guarantees cost fit.** η(1 + |ρ|) ≤ 2 is sufficient for no butterfly arbitrage,
+  not necessary. Quotes from η = 1.8 (arbitrage-free: g > 0.2 everywhere; arbitrage starts
+  between η = 2 and 3) still get η pinned to the bound and a 2.3-vol-point RMS miss. A
+  fitter that checked Durrleman's condition directly could go further, but would lose
+  the closed-form guarantee for every T.
+- **One skew for every expiry.** Real skews flatten with maturity in ways one ρ may not
+  capture. Data with ρ(T) = −0.8 + 0.25T, which per-slice SVI fits exactly, leave SSVI
+  2.0 vol points RMS off. That is the trade: fewer parameters and no arbitrage in exchange
+  for model error on smiles that don't share a shape. The usual next step is eSSVI
+  (ρ varying with θ).
+- **Between expiries the error is θ's interpolation.** The truth's θ(T) is concave and the
+  fit's is piecewise linear, which is the whole 31 bp. Before the first expiry θ₁T/T₁ is
+  a guess too, but a far better one than constant vol, because the smile's shape still
+  changes with θ.
+- **PAV is exact only for convex per-slice objectives.** Nothing here proves each slice's
+  objective is convex in θ, so the pooling step is a well-founded heuristic, not a
+  guarantee of the constrained optimum. The tests check its outputs (monotone θ, pooling
+  where the data demand it), not optimality.
+- **Synthetic quotes again.** The truth is SSVI, so the fit can be exact; on real quotes
+  the residual would mix noise with model error, and §10's per-slice fit would beat it on
+  residual while losing on arbitrage.
 
 ## Next steps
 
-- **Fit SSVI jointly across expiries**, which makes the surface calendar-free by
-  construction (§10 fits each expiry alone and only reports crossings), and extend it before
-  the first expiry with a model instead of constant vol.
-- **Weight the SVI fit by bid-ask width** once real quotes exist, instead of 1/w.
+- **eSSVI** (ρ varying with θ), to remove most of §12's one-skew model error while keeping
+  the no-arbitrage conditions.
+- **Weight the SVI and SSVI fits by bid-ask width** once real quotes exist, instead of 1/w.
 - **A real option-chain snapshot** as a §9 demo, saved in the repo so it stays reproducible.
 - **Importance sampling** for deep-OTM options (fixes §6).
 - **A sharper implied-vol starting guess** (e.g. Corrado–Miller, or Jäckel's rational

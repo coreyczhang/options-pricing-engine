@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "ope/Option.hpp"
+#include "ope/Ssvi.hpp"
 #include "ope/Svi.hpp"
 
 namespace ope::surface {
@@ -54,6 +55,7 @@ struct Slice {
 enum class SmileModel {
     Linear,  ///< linear in total variance between nodes: exact at quotes, follows their noise
     Svi,     ///< least-squares raw-SVI fit per expiry (svi::fit): smooth, wings by model
+    Ssvi,    ///< one joint SSVI fit to all expiries (ssvi::fit): arbitrage-free by construction
 };
 
 /// A static-arbitrage violation found on the quoted nodes.
@@ -90,7 +92,7 @@ struct Violation {
 ///
 /// It interpolates; it does not fit or smooth. Noisy quotes give a noisy
 /// surface, and arbitrage in the quotes is reported (arbitrage_violations()),
-/// not repaired. Fitting a parametric model (e.g. SVI) is the next step.
+/// not repaired, unless a fitted SmileModel is chosen.
 class VolSurface {
 public:
     /// Throws std::invalid_argument on an invalid spot, rate or dividend
@@ -100,7 +102,13 @@ public:
     /// and the fit replaces the linear smile at that expiry, including beyond
     /// the outermost strikes (SVI's linear-in-k wings instead of flat vol);
     /// slices with fewer nodes stay linear. Interpolation across expiries is
-    /// the same in both models.
+    /// the same as for Linear.
+    ///
+    /// With SmileModel::Ssvi all slices with >= 3 nodes are fitted jointly
+    /// (throws if there are none) and the SSVI surface replaces the
+    /// interpolation everywhere, across expiries too (theta linear in T, see
+    /// ssvi::Fit::theta). Slices with fewer nodes do not enter the fit; the
+    /// surface at their expiry is the model's.
     VolSurface(const std::vector<Quote>& quotes, double spot, double rate,
                double div_yield = 0.0, SmileModel model = SmileModel::Linear);
 
@@ -125,7 +133,12 @@ public:
     ///     interpolation between them can create arbitrage this doesn't see.
     ///   - butterfly, SVI smiles: Durrleman's g(k) >= 0 (svi::min_durrleman_g),
     ///     reported at the worst k.
+    ///   - SSVI: the same calendar grid check, and Durrleman on each slice.
+    ///     Both should come back empty: SSVI's constraints rule them out.
     std::vector<Violation> arbitrage_violations() const;
+
+    /// The joint fit when the surface was built with SmileModel::Ssvi.
+    const std::optional<ssvi::Fit>& ssvi() const { return ssvi_; }
 
 private:
     double slice_variance(const Slice& s, double log_moneyness) const;
@@ -135,6 +148,7 @@ private:
     double div_yield_;
     std::vector<Slice> slices_;  // sorted by expiry
     std::vector<Skipped> skipped_;
+    std::optional<ssvi::Fit> ssvi_;
 };
 
 }  // namespace ope::surface

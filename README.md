@@ -3,7 +3,7 @@
 [![CI](https://github.com/coreyczhang/options-pricing-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/coreyczhang/options-pricing-engine/actions/workflows/ci.yml)
 
 A European option pricing and Greeks engine in C++17: a **Black-Scholes closed form** with
-analytic Greeks, an **implied-volatility solver**, a **vol surface** with an **SVI smile fit**, and a **Monte Carlo** pricer — plain, antithetic, and bump-and-reprice
+analytic Greeks, an **implied-volatility solver**, a **vol surface** with **SVI** and **joint SSVI** fits, and a **Monte Carlo** pricer — plain, antithetic, and bump-and-reprice
 Greeks with common random numbers — that is validated *against* the closed form. The
 emphasis is on correctness you can check: every Monte Carlo number carries a standard
 error, the standard error itself is tested, and the variance reduction is measured rather
@@ -25,10 +25,10 @@ textbook values.
 
 - **No American or path-dependent options.** European payoffs only; no early exercise, no
   Asians or barriers, so no time-stepping or PDE/lattice methods.
-- **No real-data calibration.** The surface interpolates inverted quotes or fits raw SVI
-  per expiry (M8). It reports arbitrage rather than repairing it, fits expiries
-  independently (no joint SSVI), and has only been validated on synthetic quotes from a
-  known smile, not a real option chain.
+- **No real-data calibration.** The surface interpolates inverted quotes, fits raw SVI
+  per expiry (M8), or fits SSVI to all expiries jointly (M9, arbitrage-free by
+  construction). It has only been validated on synthetic quotes from a known smile, not a
+  real option chain.
 - **No market data.** Inputs are numbers on the command line or in code; there is no feed,
   no day-count or calendar handling, and no discrete dividends.
 - **Not optimized for throughput.** Single-threaded and scalar; see
@@ -46,9 +46,10 @@ textbook values.
 | M6 | Implied-vol solver: safeguarded Newton, arbitrage-bound handling, conditioning-aware tests | ✅ done |
 | M7 | Implied-vol surface from quotes, arbitrage checks, SSVI validation; Greeks and surface plots | ✅ done |
 | M8 | Raw-SVI fit per expiry (exact constrained inner LS + 2-D outer search), Durrleman check, SVI smile model on the surface | ✅ done |
+| M9 | Joint SSVI fit across expiries, arbitrage-free by construction (constrained globals, θ's profiled out with pool-adjacent-violators) | ✅ done |
 
-**Not done (see [Next steps](docs/results.md#next-steps)):** joint SSVI fit across expiries,
-a real option-chain demo, importance sampling for
+**Not done (see [Next steps](docs/results.md#next-steps)):** eSSVI (skew varying with
+maturity), a real option-chain demo, importance sampling for
 deep-OTM options, a sharper implied-vol starting guess, pathwise / likelihood-ratio Greeks, control variates, quasi-Monte Carlo,
 path-dependent payoffs.
 
@@ -129,9 +130,14 @@ ope::surface::VolSurface smooth(quotes, 100.0, 0.03, 0.01, ope::surface::SmileMo
   residual and error match least-squares theory (0.865 and 0.475 × noise vs 0.873 and
   0.488), halving linear interpolation's error, and it reports no butterfly arbitrage where
   the interpolated noisy smile reports 470 spurious ones.
-- **The tests can fail:** a mutation check injects 21 deliberate bugs (wrong drift,
+- **Joint SSVI fit** recovers all 8 parameters to < 1e-9; on noisy quotes its error vs the
+  truth is 0.283 × noise (theory 0.276); where per-slice SVI fits cross 13–88 times on
+  expiries 0.01y apart it reports no arbitrage; before the first expiry (T = 0.02–0.08) its
+  worst error is 76 bp vs linear's 26 vol points. The guarantee costs fit: one skew for all expiries
+  misses data whose skew changes with maturity by 2 vol points.
+- **The tests can fail:** a mutation check injects 25 deliberate bugs (wrong drift,
   inflated error bars, broken common random numbers, the same wrong convention in both
-  pricers…) and the suite catches all 21; CI enforces it. The first run caught two holes
+  pricers, SSVI fit weighted wrongly…) and the suite catches all 25; CI enforces it. The first run caught two holes
   in the suite, now fixed.
 - **Speed (Apple M3):** closed form 57 ns; MC 35 ns/path plain, 20 ns/path antithetic,
   72 ns/path for all five Greeks.
@@ -145,7 +151,8 @@ ope::surface::VolSurface smooth(quotes, 100.0, 0.03, 0.01, ope::surface::SmileMo
   <img src="docs/img/iv_smiles.png" width="49%" alt="Smiles and interpolation error">
 </p>
 <p align="center">
-  <img src="docs/img/svi_fit.png" width="70%" alt="SVI fit vs linear interpolation on noisy quotes">
+  <img src="docs/img/svi_fit.png" width="49%" alt="SVI fit vs linear interpolation on noisy quotes">
+  <img src="docs/img/ssvi_fit.png" width="49%" alt="Joint SSVI vs per-slice SVI and linear interpolation">
 </p>
 
 ## Why these design choices
@@ -222,6 +229,14 @@ non-negative density, every fit is also checked with Durrleman's condition. The 
 matters is statistical: residuals on noisy quotes match least-squares theory, which a fit
 stuck in a local minimum would not.
 
+**SSVI: make arbitrage impossible rather than detect it.** Per-slice fits can only report
+crossing smiles. SSVI has simple sufficient conditions for no arbitrage, so the fit
+searches only inside them: the three global parameters live in coordinates that map onto
+exactly the allowed box, and the per-expiry θ's are forced monotone by pool-adjacent-
+violators. Profiling the θ's out leaves a 3-D search. The same least-squares theory test
+caught a real bug: weights that were right for one expiry over-weighted long expiries in
+a joint fit ([results §12](docs/results.md#12-one-fit-for-all-expiries-joint-ssvi)).
+
 **Prove the tests can fail.** Agreement between two pricers is only evidence if a bug would
 break it. `scripts/mutation_check.py` injects bugs one at a time and checks that some test
 fails. The most informative mutants put the *same* wrong convention into both pricers:
@@ -249,10 +264,15 @@ precision instead of rounding to 0; variance uses Welford's one-pass algorithm i
 - **Surface extrapolation is a guess.** Outside the quoted strikes and expiries the
   surface holds vol constant; on the SSVI test that is off by up to 8 vol points on the
   deep wing before the first expiry (0.2 points at the money). Between expiries, linear interpolation in T is off by up to 1.1 vol
-  points between 1m and 3m.
+  points between 1m and 3m. The SSVI model cuts these to 0.33 (same point) and 0.31 vol
+  points on the same test, but there the truth is SSVI, so it is a best case.
 - **SVI fits each expiry alone.** Fitted slices can cross (calendar arbitrage); this is
   checked and reported, not prevented. On synthetic SSVI quotes the fit is exact because
   the truth is SVI — real smiles would add model error.
+- **SSVI trades fit for guarantees.** One skew ρ for every expiry, and a no-arbitrage
+  bound that is sufficient, not necessary: arbitrage-free data with η just past the bound
+  are fitted 2.3 vol points off. Its θ pooling (PAV) is exact only for convex per-slice
+  objectives, which isn't proven here.
 - **Model risk is out of scope.** Everything is validated *within* Black-Scholes; nothing
   here says the model is right for any real market.
 - **Timings are from one machine** and single-threaded.
@@ -261,12 +281,12 @@ precision instead of rounding to 0; variance uses Welford's one-pass algorithm i
 
 ```
 include/ope/   Option.hpp (types, payoff, validation), BlackScholes.hpp,
-               ImpliedVol.hpp, VolSurface.hpp, Svi.hpp, MonteCarlo.hpp, NormalRng.hpp
-src/           Option.cpp, BlackScholes.cpp, ImpliedVol.cpp, VolSurface.cpp, Svi.cpp,
+               ImpliedVol.hpp, VolSurface.hpp, Svi.hpp, Ssvi.hpp, MonteCarlo.hpp, NormalRng.hpp
+src/           Option.cpp, BlackScholes.cpp, ImpliedVol.cpp, VolSurface.cpp, Svi.cpp, Ssvi.cpp,
                MonteCarlo.cpp,
                main.cpp (pricer CLI), bench_main.cpp (ope_bench), export_main.cpp (ope_export)
 tests/         test_black_scholes.cpp, test_implied_vol.cpp, test_vol_surface.cpp,
-               test_svi.cpp, test_monte_carlo.cpp, test_mc_greeks.cpp
+               test_svi.cpp, test_ssvi.cpp, test_monte_carlo.cpp, test_mc_greeks.cpp
 scripts/       plot.py (figures from ope_export's CSVs), requirements.txt,
                mutation_check.py (injects bugs, checks the suite catches them)
 docs/          results.md, benchmarks.md, img/ (figures)

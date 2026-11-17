@@ -17,6 +17,7 @@
 #include "ope/BlackScholes.hpp"
 #include "ope/ImpliedVol.hpp"
 #include "ope/MonteCarlo.hpp"
+#include "ope/Ssvi.hpp"
 #include "ope/Svi.hpp"
 
 namespace {
@@ -395,6 +396,28 @@ void svi_timing() {
                 "measured.\n\n", t);
 }
 
+void ssvi_timing() {
+    // The tests' SSVI surface at 5 expiries x 21 strikes ($5, 60-160): 105 points.
+    const ope::ssvi::Params truth{-0.6, 1.0, 0.5};
+    std::vector<ope::ssvi::SliceData> data;
+    for (double T : {1.0 / 12, 0.25, 0.5, 1.0, 2.0}) {
+        const double th = 0.04 * T + 0.02 * (1.0 - std::exp(-2.0 * T));
+        ope::ssvi::SliceData d{T, {}, {}};
+        for (double K = 60.0; K <= 160.0 + 1e-9; K += 5.0) {
+            d.k.push_back(std::log(K / (100.0 * std::exp(0.02 * T))));
+            d.w.push_back(truth.w(d.k.back(), th));
+        }
+        data.push_back(std::move(d));
+    }
+    double acc = 0.0;
+    const double t = best_ms([&] { acc += ope::ssvi::fit(data).params.rho; });
+    g_sink = acc;
+    std::printf("## Joint SSVI fit\n\nFive expiries, 105 points: %.1f ms per fit (best of 5): "
+                "63 starting points plus Nelder-Mead from the best 3 over (rho, eta, gamma), "
+                "where every objective evaluation profiles out the 5 thetas (1-D searches "
+                "plus pool-adjacent-violators).\n\n", t);
+}
+
 }  // namespace
 
 int main() {
@@ -405,5 +428,6 @@ int main() {
     timing_table();
     implied_vol_table();
     svi_timing();
+    ssvi_timing();
     return 0;
 }

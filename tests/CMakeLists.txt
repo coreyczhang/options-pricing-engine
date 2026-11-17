@@ -18,6 +18,7 @@ add_executable(ope_tests
     test_implied_vol.cpp
     test_vol_surface.cpp
     test_svi.cpp
+    test_ssvi.cpp
 )
 target_link_libraries(ope_tests PRIVATE ope ope_warnings GTest::gtest_main)
 

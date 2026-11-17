@@ -21,8 +21,13 @@ K 80–120, true vol 10%–46%, automatic start). Each iteration is one price an
 this is ~5× the cost of a price; iteration counts across a wider grid are in
 [results §8](results.md#8-implied-volatility-inverting-black-scholes).
 
-**SVI fit:** **10.7 ms** per expiry with 21 strikes (grid search plus Nelder–Mead, each
+**SVI fit:** **10.8 ms** per expiry with 21 strikes (grid search plus Nelder–Mead, each
 step an exact constrained least squares; [results §10](results.md#10-fitting-svi-instead-of-interpolating)).
+
+**Joint SSVI fit:** **96.5 ms** for 5 expiries × 21 strikes (3-D Nelder–Mead from the best
+3 of 63 starts; each step profiles out the 5 θ's with 1-D searches and pool-adjacent-violators;
+[results §12](results.md#12-one-fit-for-all-expiries-joint-ssvi)). Fitting the same
+5 expiries separately with SVI costs 5 × 10.8 ≈ 54 ms.
 
 **Monte Carlo, ATM call:**
 

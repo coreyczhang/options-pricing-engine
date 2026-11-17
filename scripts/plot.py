@@ -296,6 +296,51 @@ def svi_fit(data_dir, out_dir):
     plt.close(fig)
 
 
+def ssvi_fit(data_dir, out_dir):
+    cal = read(data_dir / "ssvi_calendar.csv")
+    ext = read(data_dir / "ssvi_extrapolation.csv")
+
+    fig, (left, right) = plt.subplots(1, 2, figsize=(11, 4.4), constrained_layout=True)
+    fig.get_layout_engine().set(rect=(0, 0, 1, 0.80))
+    pairs = sorted({r["pair"] for r in cal})
+    for i, pair in enumerate(pairs):
+        rows = [r for r in cal if r["pair"] == pair]
+        K = np.array([float(r["strike"]) for r in rows])
+        svi = np.array([float(r["svi_dw"]) for r in rows]) * 1e4
+        ss = np.array([float(r["ssvi_dw"]) for r in rows]) * 1e4
+        style = "-" if i == 0 else (0, (4, 2))
+        left.plot(K, svi, color=ORANGE, linewidth=1.0, linestyle=style,
+                  label=f"SVI per expiry, pair {i + 1}")
+        left.plot(K, ss, color=BLUE, linestyle=style, label=f"joint SSVI, pair {i + 1}")
+    ylo, yhi = left.get_ylim()
+    left.axhspan(ylo, 0.0, color=GRID, alpha=0.5, linewidth=0, zorder=0)
+    left.set_ylim(ylo, yhi)
+    left.axhline(0.0, color=AXIS, linewidth=0.8)
+    left.set_title("Calendar spread between expiries 0.01y apart", loc="left")
+    left.set_xlabel("strike")
+    left.set_ylabel("w(T_next) - w(T)  (x 1e-4)")
+    left.set_xlim(K[0], K[-1])
+    left.legend(loc="lower center", ncol=2, fontsize=8)
+
+    K = np.array([float(r["strike"]) for r in ext])
+    right.axhline(0.0, color=AXIS, linewidth=0.8)
+    right.plot(K, np.array([float(r["linear_err"]) for r in ext]) * 100, color=ORANGE,
+               linewidth=1.0, label="linear interpolation (constant vol)")
+    right.plot(K, np.array([float(r["ssvi_err"]) for r in ext]) * 100, color=BLUE,
+               label="joint SSVI (theta scaled with T)")
+    right.set_title("Error at T = 0.05, before the first quoted expiry", loc="left")
+    right.set_xlabel("strike")
+    right.set_ylabel("vol points")
+    right.set_xlim(K[0], K[-1])
+    right.legend(loc="lower right", fontsize=8)
+    suptitle(fig, "Fitting all expiries at once: joint SSVI",
+             "Left: noisy quotes (20 bp) at 0.50, 0.51, 0.52y. Shaded: total variance falls "
+             "with expiry, i.e. calendar arbitrage; fitting each expiry\nalone lands there, "
+             "the joint fit cannot. Right: exact quotes at 1m-2y; the surface before 1m.")
+    fig.savefig(out_dir / "ssvi_fit.png", dpi=150)
+    plt.close(fig)
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit("usage: plot.py <csv_dir> <out_dir>")
@@ -305,7 +350,8 @@ def main():
     mc_vs_analytic(data_dir, out_dir)
     vol_surface(data_dir, out_dir)
     svi_fit(data_dir, out_dir)
-    print(f"wrote 5 figures to {out_dir}")
+    ssvi_fit(data_dir, out_dir)
+    print(f"wrote 6 figures to {out_dir}")
 
 
 if __name__ == "__main__":

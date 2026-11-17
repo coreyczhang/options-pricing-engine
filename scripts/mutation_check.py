@@ -31,6 +31,7 @@ Mutant = namedtuple("Mutant", "name group description edits")
 MC = "src/MonteCarlo.cpp"
 BS = "src/BlackScholes.cpp"
 RNG = "include/ope/NormalRng.hpp"
+SSVI = "src/Ssvi.cpp"
 
 MC_PRICE_DRIFT = "const double drift = (mkt.rate - mkt.div_yield - 0.5 * mkt.vol * mkt.vol) * T;"
 MC_PRICE_DISCOUNT = "const double discount = std::exp(-mkt.rate * T);"
@@ -129,6 +130,20 @@ MUTANTS = [
             Edit(MC, MC_PRICE_DRIFT,
                  "const double drift = (mkt.rate + mkt.div_yield - 0.5 * mkt.vol * mkt.vol) * T;"),
             Edit(MC, MC_SCENARIO, "return Scenario{(rate + q - 0.5 * vol * vol) * t, vol * std::sqrt(t),")]),
+    # ---- Joint SSVI fit ----------------------------------------------------
+    Mutant("ssvi-weight-1-over-w", "SSVI",
+           "weights 1/w instead of 1/(w T): long expiries count T times more",
+           [Edit(SSVI, "s.wt.push_back(1.0 / (d.w[i] * d.expiry));", "s.wt.push_back(1.0 / d.w[i]);")]),
+    Mutant("ssvi-no-pav", "SSVI", "thetas fitted per slice, never pooled: calendar arbitrage allowed",
+           [Edit(SSVI, "while (stack.size() >= 2 && stack[stack.size() - 2].theta > stack.back().theta)",
+                 "while (false && stack.size() >= 2)")]),
+    Mutant("ssvi-eta-bound-2x", "SSVI", "eta allowed up to 4 / (1 + |rho|) instead of 2 / (1 + |rho|)",
+           [Edit(SSVI, "return {rho, (1.0 + std::sin(x[2])) / (1.0 + std::abs(rho)),",
+                 "return {rho, 2.0 * (1.0 + std::sin(x[2])) / (1.0 + std::abs(rho)),")]),
+    Mutant("ssvi-flat-theta-before-first", "SSVI",
+           "theta held at theta_1 before the first expiry instead of scaled by T / T_1",
+           [Edit(SSVI, "if (T <= expiries.front()) return thetas.front() * T / expiries.front();",
+                 "if (T <= expiries.front()) return thetas.front();")]),
 ]
 
 # Tests that compare Monte Carlo against Black-Scholes directly (substrings, so
